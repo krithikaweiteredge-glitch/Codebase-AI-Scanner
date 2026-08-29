@@ -1,0 +1,534 @@
+// Codebase Intelligence Platform - data model
+// Vector columns use pgvector. Prisma cannot read/write `vector` directly, so
+// embeddings are written and queried through raw SQL (see src/search/*).
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector, pg_trgm]
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String  @id @default(uuid()) @db.Uuid
+  email        String  @unique
+  name         String?
+  passwordHash String  @map("password_hash")
+  avatarUrl    String? @map("avatar_url")
+
+  githubLogin      String?   @map("github_login")
+  githubUserId     String?   @map("github_user_id")
+  githubTokenEnc   String?   @map("github_token_enc")
+  githubTokenScope String?   @map("github_token_scope")
+  githubLinkedAt   DateTime? @map("github_linked_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  sessions      Session[]
+  repositories  Repository[]
+  chatSessions  ChatSession[]
+  installations GitHubInstallation[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  userAgent String?  @map("user_agent")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model OAuthState {
+  id        String   @id @default(uuid()) @db.Uuid
+  state     String   @unique
+  userId    String   @map("user_id") @db.Uuid
+  redirect  String?
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("oauth_states")
+}
+
+// ---------------------------------------------------------------------------
+// Repositories
+// ---------------------------------------------------------------------------
+
+model Repository {
+  id       String @id @default(uuid()) @db.Uuid
+  userId   String @map("user_id") @db.Uuid
+  provider String @default("github")
+
+  githubId       String? @map("github_id")
+  installationId String? @map("installation_id")
+  owner          String
+  name           String
+  fullName      String  @map("full_name")
+  description   String?
+  htmlUrl       String? @map("html_url")
+  isPrivate     Boolean @default(false) @map("is_private")
+  defaultBranch String  @default("main") @map("default_branch")
+  sizeKb        Int?    @map("size_kb")
+
+  primaryLanguage String?  @map("primary_language")
+  languageStats   Json?    @map("language_stats")
+  ignorePatterns  String[] @default([]) @map("ignore_patterns")
+
+  lastAnalyzedAt DateTime? @map("last_analyzed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  installation GitHubInstallation? @relation(fields: [installationId], references: [installationId], onDelete: SetNull)
+  branches     RepositoryBranch[]
+  commits      RepositoryCommit[]
+  files        RepositoryFile[]
+  chunks       CodeChunk[]
+  symbols      CodeSymbol[]
+  dependencies Dependency[]
+  runs         AnalysisRun[]
+  findings     AnalysisFinding[]
+  pullRequests PullRequest[]
+  docs         Documentation[]
+  chatSessions ChatSession[]
+  insights     RepositoryInsight[]
+  tests        TestSuggestion[]
+
+  @@unique([userId, fullName])
+  @@index([userId])
+  @@index([installationId])
+  @@map("repositories")
+}
+
+model GitHubInstallation {
+  id                  String   @id @default(uuid()) @db.Uuid
+  userId              String   @map("user_id") @db.Uuid
+  installationId      String   @unique @map("installation_id")
+  accountLogin        String   @map("account_login")
+  accountType         String   @default("User") @map("account_type")
+  accountAvatar       String?  @map("account_avatar")
+  repositorySelection String   @default("all") @map("repository_selection")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositories Repository[]
+
+  @@index([userId])
+  @@map("github_installations")
+}
+
+model RepositoryBranch {
+  id           String    @id @default(uuid()) @db.Uuid
+  repositoryId String    @map("repository_id") @db.Uuid
+  name         String
+  commitSha    String?   @map("commit_sha")
+  isDefault    Boolean   @default(false) @map("is_default")
+  indexedSha   String?   @map("indexed_sha")
+  indexedAt    DateTime? @map("indexed_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  repository Repository       @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  files      RepositoryFile[]
+  runs       AnalysisRun[]
+
+  @@unique([repositoryId, name])
+  @@map("repository_branches")
+}
+
+model RepositoryCommit {
+  id           String    @id @default(uuid()) @db.Uuid
+  repositoryId String    @map("repository_id") @db.Uuid
+  sha          String
+  branchName   String?   @map("branch_name")
+  message      String?
+  authorName   String?   @map("author_name")
+  authorEmail  String?   @map("author_email")
+  committedAt  DateTime? @map("committed_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, sha])
+  @@index([repositoryId, committedAt])
+  @@map("repository_commits")
+}
+
+model RepositoryFile {
+  id           String @id @default(uuid()) @db.Uuid
+  repositoryId String @map("repository_id") @db.Uuid
+  branchId     String @map("branch_id") @db.Uuid
+
+  path      String
+  name      String
+  extension String?
+  language  String?
+  role      String?
+
+  sizeBytes   Int     @map("size_bytes")
+  lineCount   Int     @map("line_count")
+  blobSha     String? @map("blob_sha")
+  contentHash String  @map("content_hash")
+  content     String?
+  truncated   Boolean @default(false)
+
+  isTest      Boolean @default(false) @map("is_test")
+  isConfig    Boolean @default(false) @map("is_config")
+  isGenerated Boolean @default(false) @map("is_generated")
+  hasSecrets  Boolean @default(false) @map("has_secrets")
+  complexity  Int     @default(0)
+  summary     String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  repository   Repository        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  branch       RepositoryBranch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  chunks       CodeChunk[]
+  symbols      CodeSymbol[]
+  findings     AnalysisFinding[]
+  outgoingDeps Dependency[]      @relation("dep_from")
+  incomingDeps Dependency[]      @relation("dep_to")
+  tests        TestSuggestion[]
+
+  @@unique([branchId, path])
+  @@index([repositoryId, language])
+  @@index([repositoryId, role])
+  @@map("repository_files")
+}
+
+model CodeChunk {
+  id           String @id @default(uuid()) @db.Uuid
+  repositoryId String @map("repository_id") @db.Uuid
+  fileId       String @map("file_id") @db.Uuid
+
+  symbolName String? @map("symbol_name")
+  symbolType String? @map("symbol_type")
+  startLine  Int     @map("start_line")
+  endLine    Int     @map("end_line")
+  content    String
+  tokenCount Int     @default(0) @map("token_count")
+
+  embedding      Unsupported("vector(1536)")?
+  embeddingModel String?                      @map("embedding_model")
+  contentHash    String                       @map("content_hash")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  repository Repository     @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  file       RepositoryFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId])
+  @@index([fileId])
+  @@map("code_chunks")
+}
+
+model CodeSymbol {
+  id           String   @id @default(uuid()) @db.Uuid
+  repositoryId String   @map("repository_id") @db.Uuid
+  fileId       String   @map("file_id") @db.Uuid
+  name         String
+  kind         String
+  signature    String?
+  parentName   String?  @map("parent_name")
+  startLine    Int      @map("start_line")
+  endLine      Int      @map("end_line")
+  exported     Boolean  @default(false)
+  isAsync      Boolean  @default(false) @map("is_async")
+  complexity   Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  repository Repository     @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  file       RepositoryFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId, name])
+  @@index([fileId])
+  @@map("code_symbols")
+}
+
+model Dependency {
+  id           String   @id @default(uuid()) @db.Uuid
+  repositoryId String   @map("repository_id") @db.Uuid
+  fromFileId   String   @map("from_file_id") @db.Uuid
+  toFileId     String?  @map("to_file_id") @db.Uuid
+  specifier    String
+  isExternal   Boolean  @default(false) @map("is_external")
+  kind         String   @default("import")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  repository Repository      @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  fromFile   RepositoryFile  @relation("dep_from", fields: [fromFileId], references: [id], onDelete: Cascade)
+  toFile     RepositoryFile? @relation("dep_to", fields: [toFileId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId])
+  @@index([fromFileId])
+  @@index([toFileId])
+  @@map("dependencies")
+}
+
+// ---------------------------------------------------------------------------
+// Analysis
+// ---------------------------------------------------------------------------
+
+model AnalysisRun {
+  id           String  @id @default(uuid()) @db.Uuid
+  repositoryId String  @map("repository_id") @db.Uuid
+  branchId     String? @map("branch_id") @db.Uuid
+  commitSha    String? @map("commit_sha")
+
+  kind   String @default("full")
+  status String @default("queued")
+
+  steps      Json?   @default("[]")
+  progress   Int     @default(0)
+  stats      Json?
+  error      String?
+  aiProvider String? @map("ai_provider")
+  aiModel    String? @map("ai_model")
+
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  repository Repository        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  branch     RepositoryBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  findings   AnalysisFinding[]
+  docs       Documentation[]
+
+  @@index([repositoryId, createdAt])
+  @@map("analysis_runs")
+}
+
+model AnalysisFinding {
+  id           String  @id @default(uuid()) @db.Uuid
+  repositoryId String  @map("repository_id") @db.Uuid
+  runId        String? @map("run_id") @db.Uuid
+  fileId       String? @map("file_id") @db.Uuid
+  reviewId     String? @map("review_id") @db.Uuid
+
+  category       String
+  ruleId         String? @map("rule_id")
+  type           String
+  severity       String
+  title          String
+  description    String
+  evidence       String?
+  recommendation String?
+
+  filePath  String? @map("file_path")
+  startLine Int?    @map("start_line")
+  endLine   Int?    @map("end_line")
+  snippet   String?
+
+  relatedFilePath  String? @map("related_file_path")
+  relatedStartLine Int?    @map("related_start_line")
+  relatedEndLine   Int?    @map("related_end_line")
+  similarity       Float?
+
+  confidence      Float   @default(0.5)
+  confidenceLabel String  @default("medium") @map("confidence_label")
+  status          String  @default("potential")
+  source          String  @default("static")
+  cwe             String?
+
+  falsePositive Boolean @default(false) @map("false_positive")
+  resolved      Boolean @default(false)
+  metadata      Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  repository Repository         @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  run        AnalysisRun?       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  file       RepositoryFile?    @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  review     PullRequestReview? @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId, category, severity])
+  @@index([runId])
+  @@index([reviewId])
+  @@map("analysis_findings")
+}
+
+model RepositoryInsight {
+  id           String   @id @default(uuid()) @db.Uuid
+  repositoryId String   @map("repository_id") @db.Uuid
+  kind         String
+  data         Json
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, kind])
+  @@map("repository_insights")
+}
+
+// ---------------------------------------------------------------------------
+// Pull requests
+// ---------------------------------------------------------------------------
+
+model PullRequest {
+  id           String @id @default(uuid()) @db.Uuid
+  repositoryId String @map("repository_id") @db.Uuid
+
+  number       Int
+  title        String
+  body         String?
+  state        String
+  authorLogin  String? @map("author_login")
+  headRef      String? @map("head_ref")
+  headSha      String? @map("head_sha")
+  baseRef      String? @map("base_ref")
+  baseSha      String? @map("base_sha")
+  url          String?
+  additions    Int     @default(0)
+  deletions    Int     @default(0)
+  changedFiles Int     @default(0) @map("changed_files")
+  draft        Boolean @default(false)
+
+  ghCreatedAt DateTime? @map("gh_created_at")
+  ghUpdatedAt DateTime? @map("gh_updated_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  repository Repository          @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  reviews    PullRequestReview[]
+
+  @@unique([repositoryId, number])
+  @@map("pull_requests")
+}
+
+model PullRequestReview {
+  id            String @id @default(uuid()) @db.Uuid
+  pullRequestId String @map("pull_request_id") @db.Uuid
+
+  status   String
+  summary  String
+  verdict  String?
+  counts   Json?
+  model    String?
+  provider String?
+
+  postedToGithub   Boolean   @default(false) @map("posted_to_github")
+  githubCommentUrl String?   @map("github_comment_url")
+  postedAt         DateTime? @map("posted_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  pullRequest PullRequest       @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  findings    AnalysisFinding[]
+
+  @@index([pullRequestId])
+  @@map("pull_request_reviews")
+}
+
+// ---------------------------------------------------------------------------
+// Documentation / tests
+// ---------------------------------------------------------------------------
+
+model Documentation {
+  id           String  @id @default(uuid()) @db.Uuid
+  repositoryId String  @map("repository_id") @db.Uuid
+  runId        String? @map("run_id") @db.Uuid
+
+  section   String
+  title     String
+  contentMd String @map("content_md")
+  position  Int    @default(0)
+  sources   Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  repository Repository   @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  run        AnalysisRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@unique([repositoryId, section])
+  @@map("documentation")
+}
+
+model TestSuggestion {
+  id           String  @id @default(uuid()) @db.Uuid
+  repositoryId String  @map("repository_id") @db.Uuid
+  fileId       String? @map("file_id") @db.Uuid
+
+  target     String
+  targetKind String  @default("function") @map("target_kind")
+  framework  String
+  cases      Json
+  code       String?
+  rationale  String?
+  filePath   String? @map("file_path")
+  startLine  Int?    @map("start_line")
+  endLine    Int?    @map("end_line")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  repository Repository      @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  file       RepositoryFile? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+
+  @@index([repositoryId])
+  @@map("test_suggestions")
+}
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
+model ChatSession {
+  id           String   @id @default(uuid()) @db.Uuid
+  repositoryId String   @map("repository_id") @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  title        String   @default("New conversation")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  repository Repository    @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages   ChatMessage[]
+
+  @@index([repositoryId, userId])
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        String @id @default(uuid()) @db.Uuid
+  sessionId String @map("session_id") @db.Uuid
+
+  role            String
+  content         String
+  citations       Json?
+  contextChunkIds Json?  @map("context_chunk_ids")
+  groundingScore  Float? @map("grounding_score")
+
+  provider  String?
+  model     String?
+  tokensIn  Int?    @map("tokens_in")
+  tokensOut Int?    @map("tokens_out")
+  latencyMs Int?    @map("latency_ms")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("chat_messages")
+}
