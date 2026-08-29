@@ -28,7 +28,7 @@ export function setSessionCookie(reply: FastifyReply, token: string): void {
   reply.setCookie(SESSION_COOKIE, token, {
     path: '/',
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: isProd ? 'none' : 'lax',
     secure: isProd,
     maxAge: SESSION_TTL_DAYS * 86_400,
     signed: false,
@@ -36,7 +36,12 @@ export function setSessionCookie(reply: FastifyReply, token: string): void {
 }
 
 export function clearSessionCookie(reply: FastifyReply): void {
-  reply.clearCookie(SESSION_COOKIE, { path: '/' });
+  reply.clearCookie(SESSION_COOKIE, {
+    path: '/',
+    httpOnly: true,
+    sameSite: isProd ? 'none' : 'lax',
+    secure: isProd,
+  });
 }
 
 export async function destroySession(token: string): Promise<void> {
