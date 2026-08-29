@@ -1,0 +1,47 @@
+# Render Blueprint for the backend. The frontend is deployed separately on
+# Vercel (see vercel.json), so this file only describes the API service.
+#
+# Import it from the Render dashboard: New > Blueprint > pick this repo.
+# It pins the build and start commands together, which keeps them from drifting
+# apart in the dashboard (a web-only build command plus `npm run start:api`
+# is what produced "Cannot find module .../apps/api/dist/index.js").
+services:
+  - type: web
+    name: codebase-ai-api
+    runtime: node
+    plan: free
+    # Build from the repo root so npm workspaces resolve; `build:api` runs
+    # `prisma generate` and compiles apps/api/src -> apps/api/dist.
+    # Migrations run here because preDeployCommand needs a paid instance type.
+    buildCommand: npm ci && npm run db:deploy && npm run build:api
+    startCommand: npm run start:api
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT; env.ts binds to it automatically.
+      - key: SESSION_SECRET
+        generateValue: true
+      # Postgres connection string (needs the pgvector extension).
+      - key: DATABASE_URL
+        sync: false
+      # Exactly 64 hex characters: `openssl rand -hex 32`.
+      - key: ENCRYPTION_KEY
+        sync: false
+      # The Vercel frontend origin, no trailing slash. Comma separated for
+      # extra allowed origins; the first one is used for OAuth redirects.
+      - key: WEB_ORIGIN
+        sync: false
+      # https://<this-service>.onrender.com/api/github/callback
+      - key: GITHUB_CALLBACK_URL
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: AI_PROVIDER
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_MODEL
+        sync: false

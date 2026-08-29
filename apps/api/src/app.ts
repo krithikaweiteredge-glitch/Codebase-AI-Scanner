@@ -5,7 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { authRoutes } from './auth/routes';
-import { env, isProd } from './env';
+import { env, isProd, webOrigins } from './env';
 import { AppError } from './errors';
 import { registerJobs } from './jobs/analysisJob';
 import { loggerOptions } from './logger';
@@ -28,7 +28,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
-    origin: env.WEB_ORIGIN.split(',').map((origin) => origin.trim()),
+    origin: webOrigins,
     credentials: true,
   });
   await app.register(cookie, { secret: env.SESSION_SECRET });

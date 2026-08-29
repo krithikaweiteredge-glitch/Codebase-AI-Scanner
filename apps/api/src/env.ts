@@ -33,6 +33,12 @@ function loadDotEnv(): void {
 
 loadDotEnv();
 
+// Render, Heroku and similar hosts inject the port to bind on as PORT and route
+// external traffic to it. Honour that unless API_PORT was set explicitly.
+if (!process.env.API_PORT && process.env.PORT) {
+  process.env.API_PORT = process.env.PORT;
+}
+
 const intFromEnv = (fallback: number) =>
   z
     .string()
@@ -100,6 +106,16 @@ export const env = parsed.data;
 export type Env = typeof env;
 
 export const isProd = env.NODE_ENV === 'production';
+
+/**
+ * WEB_ORIGIN may hold a comma separated allow list for CORS (e.g. a Vercel
+ * production domain plus preview domains). Redirects need a single origin,
+ * so the first entry is treated as the canonical one.
+ */
+export const webOrigins = env.WEB_ORIGIN.split(',')
+  .map((origin) => origin.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+export const primaryWebOrigin = webOrigins[0] ?? 'http://localhost:5173';
 export const githubOAuthConfigured = Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET);
 export const githubAppConfigured = Boolean(
   env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY && env.GITHUB_APP_SLUG,

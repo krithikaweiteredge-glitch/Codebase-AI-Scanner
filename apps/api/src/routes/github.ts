@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../auth/session';
 import { prisma } from '../db';
-import { env, githubAppConfigured, githubOAuthConfigured } from '../env';
+import { env, githubAppConfigured, githubOAuthConfigured, primaryWebOrigin } from '../env';
 import { beginOAuth, consumeOAuthState, exchangeCodeForToken } from '../github/oauth';
 import {
   deleteGitHubInstallation,
@@ -80,13 +80,13 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
       } catch (err) {
         request.log.error({ err }, 'Failed to save installation from app callback');
       }
-      return reply.redirect(`${env.WEB_ORIGIN}/repositories/connect?github=installed&installation_id=${installationId}`);
+      return reply.redirect(`${primaryWebOrigin}/repositories/connect?github=installed&installation_id=${installationId}`);
     }
 
     // Redirect to connect page with installation_id query param so client can link it if needed
     const dest = installationId
-      ? `${env.WEB_ORIGIN}/repositories/connect?github=installed&installation_id=${installationId}`
-      : `${env.WEB_ORIGIN}/repositories/connect?github=installed`;
+      ? `${primaryWebOrigin}/repositories/connect?github=installed&installation_id=${installationId}`
+      : `${primaryWebOrigin}/repositories/connect?github=installed`;
     return reply.redirect(dest);
   });
 
@@ -135,7 +135,7 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/github/connect', { preHandler: requireAuth }, async (request, reply) => {
-    const url = await beginOAuth(request.user!.id, env.WEB_ORIGIN);
+    const url = await beginOAuth(request.user!.id, primaryWebOrigin);
     return reply.send({ authorizeUrl: url });
   });
 
@@ -146,17 +146,17 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
       .safeParse(request.query);
 
     if (!query.success) {
-      return reply.redirect(`${env.WEB_ORIGIN}/settings?github=error&reason=missing_code`);
+      return reply.redirect(`${primaryWebOrigin}/settings?github=error&reason=missing_code`);
     }
 
     try {
       const { userId, redirect } = await consumeOAuthState(query.data.state);
       const { token, scopes } = await exchangeCodeForToken(query.data.code);
       const result = await storeGitHubToken(userId, token, scopes);
-      return reply.redirect(`${redirect ?? env.WEB_ORIGIN}/repositories/connect?github=connected&login=${result.login}`);
+      return reply.redirect(`${redirect ?? primaryWebOrigin}/repositories/connect?github=connected&login=${result.login}`);
     } catch (error) {
       request.log.error({ err: error }, 'GitHub OAuth callback failed');
-      return reply.redirect(`${env.WEB_ORIGIN}/settings?github=error`);
+      return reply.redirect(`${primaryWebOrigin}/settings?github=error`);
     }
   });
 
