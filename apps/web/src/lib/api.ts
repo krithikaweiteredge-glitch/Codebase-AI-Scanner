@@ -17,12 +17,15 @@ interface RequestOptions {
   raw?: boolean;
 }
 
+const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? '';
+
 /**
  * Thin API client. The session lives in an httpOnly cookie, so every request
  * just needs `credentials: 'include'` - no token ever reaches JavaScript.
  */
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const response = await fetch(path, {
+  const url = path.startsWith('http') ? path : `${BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
+  const response = await fetch(url, {
     method: options.method ?? 'GET',
     credentials: 'include',
     headers: options.body ? { 'content-type': 'application/json' } : undefined,
