@@ -16,6 +16,7 @@ import { buildCodeContext, buildRepositoryOverview } from '../search/context';
 import type { RetrievedChunk } from '../search/hybrid';
 import { findDuplicatePairs, duplicatePairToFinding, type DuplicateCandidateUnit } from './duplicates';
 import { applyPriorTriage, assignFingerprints, type TriageState } from './fingerprint';
+import { runPolicies } from './policy';
 import { scanSecretHistory } from './secretHistory';
 import { triageFiles, type TriageVerdict } from './triage';
 import { computeScores, type Score } from './scores';
@@ -102,6 +103,12 @@ export async function analyzeRepository(ctx: AnalysisContext, progress: RunProgr
     drafts.push(...secretFindings(file));
   }
 
+  // The repository's own declared invariants. Unlike every other detector,
+  // these encode what the project says must be true rather than what we think
+  // is wrong - which is the only handle available on intent-dependent bugs.
+  const policy = runPolicies(files);
+  drafts.push(...policy.drafts);
+
   drafts.push(...detectUnprotectedRoutes(ctx.stack));
   drafts.push(...detectMissingRateLimit(ctx.stack, files));
 
@@ -126,7 +133,11 @@ export async function analyzeRepository(ctx: AnalysisContext, progress: RunProgr
   const history = await runSecretHistory(ctx, currentSecrets, progress);
   drafts.push(...history);
 
-  await progress.complete('static', `${drafts.length} deterministic findings`);
+  await progress.complete(
+    'static',
+    `${drafts.length} deterministic findings` +
+      (policy.policyPath ? ` (${policy.rulesEvaluated} repository policy rule(s) applied)` : ''),
+  );
 
   // ---- dependency vulnerabilities ----------------------------------------
   const sca = await runScaStep(ctx, files, progress);

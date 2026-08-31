@@ -1,0 +1,79 @@
+# Repository policy: invariants this project asserts about its own code.
+#
+# Every other detector encodes what the scanner thinks is wrong. These encode
+# what *this project* says must be true, which is the only handle available on
+# bugs that depend on intent rather than syntax.
+#
+# Discovered automatically at .codebase-ai/policy.yml (also .json, or
+# codebase-ai.policy.yml at the root).
+#
+#   files / exclude   gitignore-syntax globs. Omit `files` to match everything.
+#   require           literal strings that must appear in each matching file
+#   forbid            literal strings that must not appear
+#   requirePattern    regexes that must match somewhere in the file
+#   forbidPattern     regexes that must not match
+#
+# A rule whose `files` glob matches nothing is reported as a configuration
+# problem, because an inert rule is worse than no rule.
+
+version: 1
+
+policies:
+  # The bug this feature exists for. verifyWebhookSignature used to return true
+  # when GITHUB_WEBHOOK_SECRET was unset, so an unauthenticated POST could
+  # unlink any user's GitHub installation. Nothing syntactic marks that as
+  # wrong - it is only wrong because of what the function is for.
+  - id: verifier-fails-closed
+    description: Signature verification must never succeed without a configured secret
+    severity: critical
+    cwe: CWE-347
+    files: "apps/api/src/github/**"
+    forbidPattern: "if\\s*\\(!\\s*[\\w.]*(SECRET|secret)[\\w.]*\\s*\\)\\s*return true"
+    remediation: >-
+      Return false when the secret is absent so the endpoint fails closed, and
+      reject the request with an explicit error rather than accepting it.
+
+  # Raw SQL is fine in the data layer and nowhere else.
+  - id: raw-sql-stays-in-the-data-layer
+    description: Unsafe raw SQL must not appear outside the search and indexer modules
+    severity: high
+    cwe: CWE-89
+    files: "apps/api/src/**"
+    exclude:
+      - "apps/api/src/search/**"
+      - "apps/api/src/indexer/**"
+      - "apps/api/src/routes/system.ts"
+      - "apps/api/src/test/**"
+      - "apps/api/src/benchmark/**"
+      # Detector definitions describe dangerous calls in their patterns; they
+      # do not make them. A scanner's own rule table always trips its own rules.
+      - "apps/api/src/analyzers/static/rules.ts"
+      - "apps/api/src/analyzers/policy/**"
+    forbid:
+      - "$queryRawUnsafe"
+      - "$executeRawUnsafe"
+
+  # Route modules that read or change user data must go through the ownership
+  # check, not just an authentication check.
+  - id: repository-routes-check-ownership
+    description: Repository-scoped routes must resolve the repository through the access guard
+    severity: critical
+    cwe: CWE-639
+    files:
+      - "apps/api/src/routes/findings.ts"
+      - "apps/api/src/routes/pullRequests.ts"
+      - "apps/api/src/routes/documentation.ts"
+      - "apps/api/src/routes/tests.ts"
+    require: "loadRepository"
+    remediation: >-
+      Call loadRepository(userId, repositoryId) before touching repository data;
+      it is what enforces that one user cannot read another user's repository.
+
+  # Secrets must never be logged, whatever the logger redaction config says.
+  - id: no-secret-material-in-logs
+    description: Decrypted tokens and private keys must never be passed to a logger
+    severity: high
+    cwe: CWE-532
+    files: "apps/api/src/**"
+    exclude: "apps/api/src/test/**"
+    forbidPattern: "log\\.(info|warn|error|debug)\\([^)]*(decryptSecret|PRIVATE_KEY|githubTokenEnc)"
