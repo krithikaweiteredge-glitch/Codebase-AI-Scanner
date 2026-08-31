@@ -47,11 +47,13 @@ services:
         sync: false
       - key: GITHUB_APP_SLUG
         sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      # Optional. The App authenticates with a JWT and installation tokens, so
+      # nothing reads these today - they exist for a future user-OAuth flow.
       - key: GITHUB_APP_CLIENT_ID
         sync: false
       - key: GITHUB_APP_CLIENT_SECRET
-        sync: false
-      - key: GITHUB_APP_PRIVATE_KEY
         sync: false
       - key: GITHUB_WEBHOOK_SECRET
         sync: false
