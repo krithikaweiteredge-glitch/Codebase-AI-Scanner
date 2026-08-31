@@ -115,6 +115,15 @@ const schema = z.object({
   EMBEDDING_PROVIDER: z.enum(['openai', 'local']).default('local'),
   EMBEDDING_MODEL: z.string().default('text-embedding-3-small'),
   EMBEDDING_API_KEY: z.string().optional().default(''),
+  /**
+   * Any OpenAI-compatible embeddings endpoint. Gemini serves one on the free
+   * tier, so real semantic embeddings need no paid account:
+   *   EMBEDDING_PROVIDER=openai
+   *   EMBEDDING_MODEL=gemini-embedding-001
+   *   EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+   * Empty means api.openai.com.
+   */
+  EMBEDDING_BASE_URL: z.string().optional().default(''),
 
   // Software composition analysis against OSV.dev. The API is public and
   // unauthenticated, so this needs no key; set SCA_ENABLED=false to opt out of

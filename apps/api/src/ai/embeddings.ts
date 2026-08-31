@@ -87,8 +87,14 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         const detail = await response.text().catch(() => '');
         throw embeddingFailed(`Embedding API error (${response.status}): ${detail.slice(0, 300)}`);
       }
-      const payload = (await response.json()) as { data: { embedding: number[]; index: number }[] };
-      const ordered = [...payload.data].sort((a, b) => a.index - b.index);
+      const payload = (await response.json()) as { data: { embedding: number[]; index?: number }[] };
+      // Gemini's OpenAI-compatible endpoint omits `index` and returns results
+      // in request order; OpenAI sends it and may not. Sort only when it is
+      // present, so neither shape is mis-ordered.
+      const rows = payload.data ?? [];
+      const ordered = rows.every((row) => typeof row.index === 'number')
+        ? [...rows].sort((a, b) => (a.index as number) - (b.index as number))
+        : rows;
       for (const item of ordered) out.push(normaliseDimensions(item.embedding));
     }
     return out;
@@ -96,10 +102,30 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 }
 
 /** Zero-pads or truncates to the fixed column width so any model can be swapped in. */
+/**
+ * Fits a provider's vector to the stored dimension, and guarantees unit norm.
+ *
+ * Short vectors are zero-padded. Long ones are truncated, which is only sound
+ * for models trained so a prefix is itself a usable embedding (Matryoshka
+ * representation learning - gemini-embedding-001 and OpenAI's
+ * text-embedding-3 family both are).
+ */
 export function normaliseDimensions(vector: number[]): number[] {
-  if (vector.length === EMBEDDING_DIMENSIONS) return vector;
   const out = new Array<number>(EMBEDDING_DIMENSIONS).fill(0);
-  for (let i = 0; i < Math.min(vector.length, EMBEDDING_DIMENSIONS); i++) out[i] = vector[i] as number;
+  const shared = Math.min(vector.length, EMBEDDING_DIMENSIONS);
+  for (let i = 0; i < shared; i++) out[i] = vector[i] as number;
+
+  // Always L2-normalise, never only on the truncation path. Providers do not
+  // agree on this: gemini-embedding-001 returns a unit vector at its native
+  // 3072 dimensions but an unnormalised one whenever a smaller
+  // output_dimensionality is requested, and truncation destroys the norm
+  // regardless. The local provider normalises, so doing it here keeps every
+  // stored vector on the same scale.
+  let norm = 0;
+  for (const value of out) norm += value * value;
+  norm = Math.sqrt(norm);
+  if (!norm) return out;
+  for (let i = 0; i < out.length; i++) out[i] = (out[i] as number) / norm;
   return out;
 }
 
@@ -108,7 +134,11 @@ let cached: EmbeddingProvider | null = null;
 export function getEmbeddingProvider(): EmbeddingProvider {
   if (cached) return cached;
   if (env.EMBEDDING_PROVIDER === 'openai') {
-    cached = new OpenAIEmbeddingProvider(env.EMBEDDING_MODEL, env.EMBEDDING_API_KEY || env.AI_API_KEY);
+    cached = new OpenAIEmbeddingProvider(
+      env.EMBEDDING_MODEL,
+      env.EMBEDDING_API_KEY || env.AI_API_KEY,
+      env.EMBEDDING_BASE_URL || undefined,
+    );
   } else {
     cached = new LocalEmbeddingProvider();
   }

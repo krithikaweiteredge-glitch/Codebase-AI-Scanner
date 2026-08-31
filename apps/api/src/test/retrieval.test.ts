@@ -66,10 +66,38 @@ describe('local embeddings', () => {
     expect(cosineSimilarity(query!, related!)).toBeGreaterThan(cosineSimilarity(query!, unrelated!));
   });
 
-  it('pads shorter vectors to the fixed column width', () => {
+  it('fits any vector to the column width and returns it unit length', () => {
     const padded = normaliseDimensions([1, 2, 3]);
+
     expect(padded).toHaveLength(1536);
-    expect(padded.slice(0, 3)).toEqual([1, 2, 3]);
+    // Direction is preserved; only the scale changes.
+    expect(padded[1]! / padded[0]!).toBeCloseTo(2, 10);
+    expect(padded[2]! / padded[0]!).toBeCloseTo(3, 10);
+    expect(padded.slice(3).every((v) => v === 0)).toBe(true);
+
+    // Every stored vector must be on the same scale. Providers disagree:
+    // gemini-embedding-001 returns a unit vector at its native 3072 dimensions
+    // but an unnormalised one at any smaller output_dimensionality, and
+    // truncation destroys the norm regardless. Mixed magnitudes in one column
+    // skew every comparison made against it.
+    const magnitude = Math.sqrt(padded.reduce((sum, value) => sum + value * value, 0));
+    expect(magnitude).toBeCloseTo(1, 10);
+  });
+
+  it('truncates an over-long vector and re-normalises it', () => {
+    const long = new Array(3072).fill(0).map((_, i) => (i < 1536 ? 0.02 : 0.9));
+
+    const fitted = normaliseDimensions(long);
+
+    expect(fitted).toHaveLength(1536);
+    expect(Math.sqrt(fitted.reduce((sum, v) => sum + v * v, 0))).toBeCloseTo(1, 10);
+  });
+
+  it('leaves an all-zero vector alone rather than dividing by zero', () => {
+    const zeros = normaliseDimensions(new Array(10).fill(0));
+
+    expect(zeros).toHaveLength(1536);
+    expect(zeros.every((v) => v === 0)).toBe(true);
   });
 
   it('formats pgvector literals and rejects wrong dimensions', () => {
