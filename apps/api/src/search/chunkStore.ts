@@ -50,29 +50,39 @@ export async function insertChunks(chunks: readonly ChunkInsert[]): Promise<numb
   for (const batch of chunkArray(chunks, 40)) {
     const values: string[] = [];
     const params: unknown[] = [];
-    let p = 1;
 
     for (const chunk of batch) {
-      const embeddingParam = chunk.embedding ? `$${p + 10}::vector` : 'NULL';
-      values.push(
-        `($${p}::uuid, $${p + 1}::uuid, $${p + 2}::uuid, $${p + 3}, $${p + 4}, $${p + 5}::int, $${p + 6}::int, ` +
-          `$${p + 7}, $${p + 8}::int, $${p + 9}, ${embeddingParam}, $${p + 11})`,
-      );
-      params.push(
-        randomUUID(),
-        chunk.repositoryId,
-        chunk.fileId,
-        chunk.symbolName,
-        chunk.symbolType,
-        chunk.startLine,
-        chunk.endLine,
-        chunk.content,
-        chunk.tokenCount,
-        chunk.contentHash,
-        chunk.embedding ? toVectorLiteral(chunk.embedding) : null,
-        chunk.embeddingModel,
-      );
-      p += 12;
+      // Placeholders are numbered from the params array itself. Computing them
+      // from a fixed 12-slot stride broke the moment a chunk had no vector:
+      // the SQL emitted a literal NULL and skipped that placeholder, while the
+      // value was still pushed - leaving a parameter the query never
+      // referenced. Postgres cannot infer a type for that and rejects the
+      // whole statement (42P18), so one unembedded chunk lost the 40 beside it.
+      const slots: string[] = [];
+      const bind = (value: unknown, cast = '') => {
+        params.push(value);
+        slots.push(`$${params.length}${cast}`);
+      };
+
+      bind(randomUUID(), '::uuid');
+      bind(chunk.repositoryId, '::uuid');
+      bind(chunk.fileId, '::uuid');
+      bind(chunk.symbolName);
+      bind(chunk.symbolType);
+      bind(chunk.startLine, '::int');
+      bind(chunk.endLine, '::int');
+      bind(chunk.content);
+      bind(chunk.tokenCount, '::int');
+      bind(chunk.contentHash);
+
+      // A chunk with no vector is still worth storing: lexical and symbol
+      // search still reach it, and a later run can fill the vector in.
+      if (chunk.embedding) bind(toVectorLiteral(chunk.embedding), '::vector');
+      else slots.push('NULL');
+
+      bind(chunk.embeddingModel);
+
+      values.push(`(${slots.join(', ')})`);
     }
 
     const sql =

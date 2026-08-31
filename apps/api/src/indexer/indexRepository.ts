@@ -162,10 +162,22 @@ export async function indexRepository(options: IndexOptions, progress: RunProgre
   const candidatePaths = new Set(candidates.map((c) => c.path));
 
   const removed = existing.filter((f) => !candidatePaths.has(f.path));
-  const changed = options.incremental
+
+  // An incremental run keeps the vectors of unchanged files. That is only
+  // sound while every stored vector came from the same model: embeddings from
+  // different models occupy different spaces, and comparing across them
+  // produces confident nonsense rather than an obvious failure. Switching
+  // EMBEDDING_PROVIDER therefore forces a full re-index.
+  const embeddingDrift = await hasEmbeddingModelDrift(branch.id, getEmbeddingProvider().model);
+  const incremental = options.incremental && !embeddingDrift;
+  if (embeddingDrift) {
+    await progress.detail('discover', 'embedding model changed since the last index - re-embedding everything');
+  }
+
+  const changed = incremental
     ? candidates.filter((c) => existingByPath.get(c.path)?.blobSha !== c.sha)
     : candidates;
-  const unchangedPaths = options.incremental
+  const unchangedPaths = incremental
     ? candidates.filter((c) => existingByPath.get(c.path)?.blobSha === c.sha).map((c) => c.path)
     : [];
 
@@ -580,4 +592,25 @@ function resolveTarget(
     if (hit) return hit;
   }
   return byPathNoExt.get(base) ?? null;
+}
+
+/**
+ * True when any stored vector for this branch came from a different embedding
+ * model than the one now configured.
+ *
+ * `code_chunks.embedding_model` was recorded from the start but never read, so
+ * changing provider silently mixed vector spaces - the stored lexical vectors
+ * and the new semantic ones would be compared against each other as if
+ * comparable. Nothing errors; retrieval just quietly returns rubbish.
+ */
+export async function hasEmbeddingModelDrift(branchId: string, currentModel: string): Promise<boolean> {
+  const rows = await prisma.$queryRaw<{ embedding_model: string | null }[]>`
+    SELECT DISTINCT c.embedding_model
+    FROM code_chunks c
+    JOIN repository_files f ON f.id = c.file_id
+    WHERE f.branch_id = ${branchId}::uuid
+      AND c.embedding IS NOT NULL
+    LIMIT 10
+  `;
+  return rows.some((row) => row.embedding_model !== currentModel);
 }

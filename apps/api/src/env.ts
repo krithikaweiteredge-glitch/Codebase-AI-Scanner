@@ -124,6 +124,11 @@ const schema = z.object({
    * Empty means api.openai.com.
    */
   EMBEDDING_BASE_URL: z.string().optional().default(''),
+  /**
+   * Inputs per embedding request. Gemini's free tier rejects batches much
+   * above 32 with a 429 regardless of payload size; OpenAI tolerates far more.
+   */
+  EMBEDDING_BATCH_SIZE: intFromEnv(32),
 
   // Software composition analysis against OSV.dev. The API is public and
   // unauthenticated, so this needs no key; set SCA_ENABLED=false to opt out of

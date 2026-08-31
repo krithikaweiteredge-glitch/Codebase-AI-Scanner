@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import { z } from 'zod';
 import { LocalEmbeddingProvider, cosineSimilarity, normaliseDimensions } from '../ai/embeddings';
 import { setAIProvider } from '../ai/provider';
@@ -241,5 +241,53 @@ describe('credential handling', () => {
     expect(hash.startsWith('scrypt$')).toBe(true);
     expect(verifyPassword('correct horse battery staple', hash)).toBe(true);
     expect(verifyPassword('wrong password', hash)).toBe(false);
+  });
+});
+
+describe('chunk insert SQL', () => {
+  it('binds a chunk with no vector without breaking the batch', async () => {
+    // Regression: placeholders were numbered from a fixed 12-slot stride, so a
+    // null embedding emitted a literal NULL, skipped its placeholder, and still
+    // pushed the value - leaving a parameter the query never referenced.
+    // Postgres rejects that (42P18) and the whole batch of 40 chunks was lost.
+    const captured: { sql: string; params: unknown[] } = { sql: '', params: [] };
+
+    const { insertChunks } = await import('../search/chunkStore');
+    const { prisma } = await import('../db');
+    const spy = vi.spyOn(prisma, '$executeRawUnsafe').mockImplementation(
+      (async (sql: string, ...params: unknown[]) => {
+        captured.sql = sql;
+        captured.params = params;
+        return 2;
+      }) as never,
+    );
+
+    const base = {
+      repositoryId: '11111111-1111-4111-8111-111111111111',
+      fileId: '22222222-2222-4222-8222-222222222222',
+      symbolName: 's',
+      symbolType: 'function',
+      startLine: 1,
+      endLine: 2,
+      content: 'x',
+      tokenCount: 1,
+      contentHash: 'h',
+    };
+
+    await insertChunks([
+      { ...base, embedding: new Array(1536).fill(0.1), embeddingModel: 'm' },
+      { ...base, embedding: null, embeddingModel: null },
+    ]);
+
+    // Every placeholder the SQL references must exist in the params array,
+    // and every param must be referenced.
+    const referenced = new Set([...captured.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1])));
+    expect(Math.max(...referenced)).toBe(captured.params.length);
+    for (let i = 1; i <= captured.params.length; i++) {
+      expect(referenced.has(i)).toBe(true);
+    }
+    expect(captured.sql).toContain('NULL');
+
+    spy.mockRestore();
   });
 });

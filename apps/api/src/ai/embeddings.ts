@@ -1,6 +1,7 @@
 import { EMBEDDING_DIMENSIONS, env } from '../env';
 import { embeddingFailed } from '../errors';
 import { chunkArray } from '../lib/pool';
+import { defaultRetryPolicy, fetchWithRetry } from './retry';
 import { tokenizeForLexical } from '../lib/text';
 import type { EmbeddingProvider } from './types';
 
@@ -67,11 +68,13 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
   async embed(texts: string[]): Promise<number[][]> {
     const out: number[][] = [];
-    // The API caps request size; batch conservatively.
-    for (const batch of chunkArray(texts, 64)) {
-      let response: Response;
-      try {
-        response = await fetch(`${this.baseUrl.replace(/\/$/, '')}/v1/embeddings`, {
+    // Batch size is a hard limit, not a tuning knob: Gemini's free tier rejects
+    // anything much above 32 inputs per request with a 429, whatever the
+    // payload size. The previous fixed 64 meant every embedding call failed.
+    for (const batch of chunkArray(texts, env.EMBEDDING_BATCH_SIZE)) {
+      const { response, networkError, attempts } = await fetchWithRetry(
+        `${this.baseUrl.replace(/\/$/, '')}/v1/embeddings`,
+        {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
           body: JSON.stringify({
@@ -79,13 +82,17 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
             input: batch.map((t) => t.slice(0, 20_000)),
             dimensions: EMBEDDING_DIMENSIONS,
           }),
-        });
-      } catch {
-        throw embeddingFailed('Could not reach the embedding API');
+        },
+        defaultRetryPolicy(),
+      );
+
+      const tries = attempts > 1 ? ` after ${attempts} attempts` : '';
+      if (!response) {
+        throw embeddingFailed(`Could not reach the embedding API${tries}: ${networkError?.message ?? 'unknown error'}`);
       }
       if (!response.ok) {
         const detail = await response.text().catch(() => '');
-        throw embeddingFailed(`Embedding API error (${response.status}): ${detail.slice(0, 300)}`);
+        throw embeddingFailed(`Embedding API error (${response.status})${tries}: ${detail.slice(0, 300)}`);
       }
       const payload = (await response.json()) as { data: { embedding: number[]; index?: number }[] };
       // Gemini's OpenAI-compatible endpoint omits `index` and returns results
