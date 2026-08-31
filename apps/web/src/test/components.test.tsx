@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CitationList } from '@/components/CitationList';
 import { Markdown } from '@/components/Markdown';
-import { SeverityBadge, StatusBadge } from '@/components/ui/primitives';
+import { PasswordInput, SeverityBadge, StatusBadge } from '@/components/ui/primitives';
 
 describe('Markdown', () => {
   it('renders markdown and makes file references clickable', async () => {
@@ -76,5 +76,40 @@ describe('finding badges', () => {
     expect(screen.getByText('confirmed · static')).toBeInTheDocument();
     expect(screen.getByText('potential · AI')).toBeInTheDocument();
     expect(screen.getByText('likely · static+AI')).toBeInTheDocument();
+  });
+});
+
+describe('PasswordInput', () => {
+  it('masks the value by default', () => {
+    render(<PasswordInput value="hunter2" onChange={() => {}} />);
+
+    expect(screen.getByLabelText('Show password')).toBeInTheDocument();
+    expect(document.querySelector('input')).toHaveAttribute('type', 'password');
+  });
+
+  it('reveals and re-hides the value when the eye is clicked', async () => {
+    render(<PasswordInput value="hunter2" onChange={() => {}} />);
+    const input = document.querySelector('input')!;
+
+    await userEvent.click(screen.getByLabelText('Show password'));
+    expect(input).toHaveAttribute('type', 'text');
+
+    // The control's label has to describe what it will do next, not its state.
+    await userEvent.click(screen.getByLabelText('Hide password'));
+    expect(input).toHaveAttribute('type', 'password');
+  });
+
+  it('does not submit the form it sits in', async () => {
+    const onSubmit = vi.fn((e: React.FormEvent) => e.preventDefault());
+    render(
+      <form onSubmit={onSubmit}>
+        <PasswordInput value="hunter2" onChange={() => {}} />
+      </form>,
+    );
+
+    await userEvent.click(screen.getByLabelText('Show password'));
+
+    // A bare <button> inside a form defaults to type="submit".
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });

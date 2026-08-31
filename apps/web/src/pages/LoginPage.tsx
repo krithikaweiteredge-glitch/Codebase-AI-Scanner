@@ -1,6 +1,6 @@
 import { Network } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
-import { Button, Card, Input } from '@/components/ui/primitives';
+import { Button, Card, Input, PasswordInput } from '@/components/ui/primitives';
 import { useAuth } from '@/hooks/useAuth';
 
 export function LoginPage() {
@@ -68,8 +68,7 @@ export function LoginPage() {
 
             <label className="block">
               <span className="mb-1 block text-2xs uppercase tracking-wider text-ink-faint">Password</span>
-              <Input
-                type="password"
+              <PasswordInput
                 required
                 minLength={8}
                 value={password}

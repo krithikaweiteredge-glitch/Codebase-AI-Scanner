@@ -1,4 +1,5 @@
-import { forwardRef, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
+import { forwardRef, useState, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,52 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
     />
   );
 });
+
+/**
+ * Password field with a reveal toggle.
+ *
+ * Typing a password blind is the main cause of failed sign-ins, and it is
+ * worse on a "create account" form where a typo is silently committed. The
+ * toggle is a real `<button type="button">` so it is reachable by keyboard and
+ * announced by screen readers, and it never submits the surrounding form.
+ */
+export const PasswordInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
+  function PasswordInput({ className, ...props }, ref) {
+    const [revealed, setRevealed] = useState(false);
+
+    return (
+      <div className="relative">
+        <input
+          ref={ref}
+          type={revealed ? 'text' : 'password'}
+          className={cn(
+            'h-8 w-full rounded-md border border-line bg-surface px-2.5 text-sm text-ink placeholder:text-ink-faint',
+            'focus:border-accent/60 focus:outline-none focus:ring-1 focus:ring-accent/40',
+            // Room for the toggle, so a long value never runs underneath it.
+            'pr-9',
+            className,
+          )}
+          {...props}
+        />
+        <button
+          type="button"
+          onClick={() => setRevealed((shown) => !shown)}
+          // The control's purpose changes with its state, so the label must too.
+          aria-label={revealed ? 'Hide password' : 'Show password'}
+          aria-pressed={revealed}
+          title={revealed ? 'Hide password' : 'Show password'}
+          className={cn(
+            'absolute right-0 top-0 flex h-8 w-9 items-center justify-center rounded-r-md',
+            'text-ink-faint transition-colors hover:text-ink',
+            'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+          )}
+        >
+          {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+        </button>
+      </div>
+    );
+  },
+);
 
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function Select(
   { className, children, ...props },
