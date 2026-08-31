@@ -17,6 +17,7 @@ import type { RetrievedChunk } from '../search/hybrid';
 import { findDuplicatePairs, duplicatePairToFinding, type DuplicateCandidateUnit } from './duplicates';
 import { applyPriorTriage, assignFingerprints, type TriageState } from './fingerprint';
 import { scanSecretHistory } from './secretHistory';
+import { triageFiles, type TriageVerdict } from './triage';
 import { computeScores, type Score } from './scores';
 import { runSastScan, SemgrepUnavailable } from './sast';
 import { MAX_ADVISORY_FETCHES, scanDependencies } from './sca';
@@ -57,6 +58,15 @@ export interface AnalysisSummary {
   sast: SastSummary;
   /** How many findings kept a user's earlier false-positive/resolved decision. */
   triageCarriedForward: number;
+  aiTriage: AiTriageSummary;
+}
+
+export interface AiTriageSummary {
+  ran: boolean;
+  filesTriaged: number;
+  filesSelected: number;
+  model: string | null;
+  skippedReason?: string;
 }
 
 export interface SastSummary {
@@ -76,9 +86,6 @@ export interface ScaSummary {
   advisories: number;
   skippedReason?: string;
 }
-
-/** Max AI review batches per category - bounds cost on large repositories. */
-const AI_BATCHES_PER_CATEGORY = 3;
 
 export async function analyzeRepository(ctx: AnalysisContext, progress: RunProgress): Promise<AnalysisSummary> {
   await progress.start('static');
@@ -133,13 +140,20 @@ export async function analyzeRepository(ctx: AnalysisContext, progress: RunProgr
   await progress.start('ai');
   let aiUsed = false;
   let aiRejected = 0;
+  let aiTriage: { verdicts: ReadonlyMap<string, TriageVerdict>; summary: AiTriageSummary } = {
+    verdicts: new Map(),
+    summary: { ran: false, filesTriaged: 0, filesSelected: 0, model: null },
+  };
 
   if (aiEnabled()) {
     const overview = buildRepositoryOverview(ctx.stack, { maxRoutes: 25, maxDirectories: 20 });
 
+    // Stage one: sweep every file cheaply so stage two reads the right ones.
+    aiTriage = await runTriageStage(ctx, files, overview, progress);
+
     for (const category of ['security', 'bug', 'performance'] as const) {
       try {
-        const result = await runAiCategory(ctx, category, files, drafts, overview);
+        const result = await runAiCategory(ctx, category, files, drafts, overview, aiTriage.verdicts);
         drafts.push(...result.findings);
         aiRejected += result.rejected;
         aiUsed = aiUsed || result.findings.length > 0 || result.ran;
@@ -214,6 +228,7 @@ export async function analyzeRepository(ctx: AnalysisContext, progress: RunProgr
     sca: sca.summary,
     sast: sast.summary,
     triageCarriedForward: carried,
+    aiTriage: aiTriage.summary,
   };
 }
 
@@ -281,6 +296,58 @@ async function runSastStep(
         : `Dataflow analysis failed: ${(error as Error).message}`;
     await progress.skip('sast', reason.slice(0, 300));
     return { drafts: [], summary: { ...empty, skippedReason: reason } };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// AI triage (stage one)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sweeps every file with a cheap model so the expensive review reads the right
+ * ones. Best-effort: if it is disabled or fails, stage two falls back to
+ * ranking by static findings and directory role, exactly as before.
+ */
+async function runTriageStage(
+  ctx: AnalysisContext,
+  files: readonly AnalyzableFile[],
+  overview: string,
+  progress: RunProgress,
+): Promise<{ verdicts: ReadonlyMap<string, TriageVerdict>; summary: AiTriageSummary }> {
+  const empty: AiTriageSummary = { ran: false, filesTriaged: 0, filesSelected: 0, model: null };
+
+  if (!env.AI_TRIAGE_ENABLED) {
+    return { verdicts: new Map(), summary: { ...empty, skippedReason: 'AI_TRIAGE_ENABLED=false' } };
+  }
+
+  try {
+    const result = await triageFiles(files, {
+      repositoryName: ctx.repositoryName,
+      overview,
+      batchSize: env.AI_TRIAGE_BATCH_FILES,
+      maxFiles: env.AI_TRIAGE_MAX_FILES,
+      maxTokens: env.AI_MAX_OUTPUT_TOKENS,
+    });
+
+    const selected = [...result.verdicts.values()].filter((v) => v.risk >= 0.5).length;
+    await progress.detail(
+      'ai',
+      `triage swept ${result.filesTriaged} file(s) in ${result.batches} batch(es); ${selected} above the review threshold`,
+    );
+
+    return {
+      verdicts: result.verdicts,
+      summary: {
+        ran: result.filesTriaged > 0,
+        filesTriaged: result.filesTriaged,
+        filesSelected: selected,
+        model: env.AI_TRIAGE_MODEL || env.AI_MODEL,
+      },
+    };
+  } catch (error) {
+    // Includes AIGenerationUnavailable: the deep review will report that too.
+    const reason = `Triage unavailable: ${(error as Error).message}`;
+    return { verdicts: new Map(), summary: { ...empty, skippedReason: reason.slice(0, 300) } };
   }
 }
 
@@ -408,14 +475,18 @@ async function runAiCategory(
   files: AnalyzableFile[],
   existing: AnalysisFindingDraft[],
   overview: string,
+  triage: ReadonlyMap<string, TriageVerdict>,
 ): Promise<{ findings: AnalysisFindingDraft[]; rejected: number; ran: boolean }> {
-  const batches = selectReviewBatches(category, files, existing);
+  const batches = selectReviewBatches(category, files, existing, triage, {
+    maxFiles: env.AI_MAX_REVIEW_FILES,
+    perBatch: env.AI_REVIEW_BATCH_FILES,
+  });
   if (!batches.length) return { findings: [], rejected: 0, ran: false };
 
   const out: AnalysisFindingDraft[] = [];
   let rejected = 0;
 
-  for (const batch of batches.slice(0, AI_BATCHES_PER_CATEGORY)) {
+  for (const batch of batches.slice(0, env.AI_BATCHES_PER_CATEGORY)) {
     const context = buildCodeContext(batch.chunks, Math.floor(env.CONTEXT_TOKEN_BUDGET * 0.9));
     if (!context.sources.length) continue;
 
@@ -487,10 +558,12 @@ interface ReviewBatch {
  * Choose what the model actually looks at. Static analysis and structural role
  * information decide - the model never sees the whole repository.
  */
-function selectReviewBatches(
+export function selectReviewBatches(
   category: 'security' | 'bug' | 'performance',
   files: AnalyzableFile[],
   existing: AnalysisFindingDraft[],
+  triage?: ReadonlyMap<string, TriageVerdict>,
+  limits: { maxFiles?: number; perBatch?: number } = {},
 ): ReviewBatch[] {
   const riskByPath = new Map<string, number>();
 
@@ -514,14 +587,30 @@ function selectReviewBatches(
     if (file.lineCount > 400) bump(file.path, 1);
   }
 
+  // Stage-one triage read every file, including ones no static rule flagged
+  // and no role weighting favours - the blind spot the two heuristics above
+  // share. Weighted to dominate them when it is confident, because it is the
+  // only signal that actually looked at the contents.
+  if (triage) {
+    for (const file of files) {
+      if (file.isGenerated) continue;
+      const verdict = triage.get(file.path);
+      if (!verdict) continue;
+      const relevant = verdict.categories.length === 0 || verdict.categories.includes(category);
+      if (!relevant) continue;
+      bump(file.path, verdict.risk * 12);
+    }
+  }
+
   const ranked = [...riskByPath.entries()]
+    .filter(([, score]) => score > 0)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 45)
+    .slice(0, limits.maxFiles ?? 45)
     .map(([path]) => path);
 
   const byPath = new Map(files.map((f) => [f.path, f]));
   const batches: ReviewBatch[] = [];
-  const perBatch = 15;
+  const perBatch = limits.perBatch ?? 15;
 
   for (let i = 0; i < ranked.length; i += perBatch) {
     const slice = ranked.slice(i, i + perBatch);

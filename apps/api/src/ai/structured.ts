@@ -2,7 +2,7 @@ import type { z } from 'zod';
 import { invalidAiResponse } from '../errors';
 import { getAIProvider } from './provider';
 import { LOCAL_NO_GENERATION } from './providers/local';
-import type { AIMessage, CompletionResult } from './types';
+import type { AIMessage, AIProvider, CompletionResult } from './types';
 
 export class AIGenerationUnavailable extends Error {
   constructor() {
@@ -23,6 +23,8 @@ export interface StructuredOptions<T> {
   temperature?: number;
   /** Number of repair attempts after the first failure. */
   repairAttempts?: number;
+  /** Override the provider, e.g. the cheap model used by the triage pass. */
+  provider?: AIProvider;
 }
 
 export interface StructuredResult<T> {
@@ -36,7 +38,7 @@ export interface StructuredResult<T> {
  * Raw model output is never trusted: callers only ever see schema-valid data.
  */
 export async function generateStructured<T>(options: StructuredOptions<T>): Promise<StructuredResult<T>> {
-  const provider = getAIProvider();
+  const provider = options.provider ?? getAIProvider();
   if (!provider.supportsGeneration) throw new AIGenerationUnavailable();
 
   const messages: AIMessage[] = [{ role: 'user', content: options.user }];

@@ -114,6 +114,9 @@ export async function runAnalysisJob(
       semgrepFindings: summary.sast.findings,
       semgrepDataflowFindings: summary.sast.dataflowFindings,
       triageCarriedForward: summary.triageCarriedForward,
+      aiTriageFilesSwept: summary.aiTriage.filesTriaged,
+      aiTriageFilesSelected: summary.aiTriage.filesSelected,
+      aiTriageModel: summary.aiTriage.model,
     });
 
     // ---- architecture ----------------------------------------------------

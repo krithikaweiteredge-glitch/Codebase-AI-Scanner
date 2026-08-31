@@ -77,6 +77,30 @@ const schema = z.object({
   AI_BASE_URL: z.string().optional().default(''),
   AI_MAX_OUTPUT_TOKENS: intFromEnv(4096),
 
+  /**
+   * Two-stage AI review. Stage one sweeps a compact digest of every file with
+   * a cheap model and scores what deserves a real read; stage two reads the
+   * winners in full. Without it, file selection is blind to any file that no
+   * static rule flagged and no directory role favours.
+   *
+   * AI_TRIAGE_MODEL should be the cheapest usable model on the same provider
+   * (gemini-3.6-flash, gpt-5-mini, claude-haiku-4-5-20251001). Empty reuses
+   * AI_MODEL, which works but removes the cost advantage.
+   */
+  AI_TRIAGE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false')
+    .pipe(z.boolean()),
+  AI_TRIAGE_MODEL: z.string().optional().default(''),
+  AI_TRIAGE_BATCH_FILES: intFromEnv(40),
+  AI_TRIAGE_MAX_FILES: intFromEnv(1500),
+
+  /** Files the deep review may read, and how they are grouped into requests. */
+  AI_MAX_REVIEW_FILES: intFromEnv(90),
+  AI_REVIEW_BATCH_FILES: intFromEnv(15),
+  AI_BATCHES_PER_CATEGORY: intFromEnv(4),
+
   EMBEDDING_PROVIDER: z.enum(['openai', 'local']).default('local'),
   EMBEDDING_MODEL: z.string().default('text-embedding-3-small'),
   EMBEDDING_API_KEY: z.string().optional().default(''),
