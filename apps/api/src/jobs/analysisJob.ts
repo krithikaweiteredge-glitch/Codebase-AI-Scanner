@@ -81,7 +81,7 @@ export async function runAnalysisJob(
 
     // Findings from previous runs on this branch are replaced, not accumulated.
     await prisma.analysisFinding.deleteMany({
-      where: { repositoryId: payload.repositoryId, reviewId: null, file: { branchId: indexResult.branchId } },
+      where: previousFindingsFilter(payload.repositoryId, indexResult.branchId),
     });
 
     // ---- analysis --------------------------------------------------------
@@ -199,6 +199,29 @@ export async function runAnalysisJob(
     // Terminal: tell the queue not to spend the remaining attempts on it.
     if (attemptsLeft) throw new TerminalJobError(message, error);
   }
+}
+
+/**
+ * Selects the findings a new run replaces.
+ *
+ * Most findings point at an indexed file, so `file.branchId` scopes them. Some
+ * cannot: a dependency finding cites `package-lock.json`, which the indexer
+ * deliberately excludes, and a git-history secret cites a file that no longer
+ * exists at HEAD. Those are stored with a null `fileId`, and a null-file row
+ * can never satisfy a `file: { ... }` condition - so the original filter left
+ * them behind and every run stacked another copy on top. Seven vulnerable
+ * dependencies became fourteen after two runs.
+ *
+ * They are instead scoped by the run that created them, which does record a
+ * branch, so they are replaced on the branch they belong to and left alone on
+ * every other.
+ */
+export function previousFindingsFilter(repositoryId: string, branchId: string): Prisma.AnalysisFindingWhereInput {
+  return {
+    repositoryId,
+    reviewId: null,
+    OR: [{ file: { branchId } }, { fileId: null, run: { branchId } }],
+  };
 }
 
 /**
