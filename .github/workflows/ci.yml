@@ -58,6 +58,13 @@ jobs:
       - name: Test
         run: npm test
 
+      # Measures detection against the labelled corpus and prints per-CWE
+      # recall and precision. Fails on a missed vulnerable case or a report on
+      # safe code, so a rule change that quietly loses coverage is caught here
+      # rather than in someone's repository.
+      - name: Detection benchmark
+        run: npm run benchmark
+
       # Catches the class of break that only shows up in a production build -
       # the deploy failures this repo has already hit more than once.
       - name: Build

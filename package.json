@@ -24,6 +24,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "npm --workspace @codebase-ai/api run test && npm --workspace @codebase-ai/web run test",
+    "benchmark": "npm --workspace @codebase-ai/api run benchmark",
     "db:generate": "npm --workspace @codebase-ai/api run db:generate",
     "db:migrate": "npm --workspace @codebase-ai/api run db:migrate",
     "db:deploy": "npm --workspace @codebase-ai/api run db:deploy",

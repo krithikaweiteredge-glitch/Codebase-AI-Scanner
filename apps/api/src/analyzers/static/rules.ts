@@ -45,7 +45,11 @@ export const STATIC_RULES: StaticRule[] = [
     severity: 'critical',
     confidence: 0.9,
     languages: '*',
-    pattern: /(?:SELECT|INSERT|UPDATE|DELETE)\s[^;'"`\n]{0,200}['"`]\s*\+\s*(?:req\.|request\.|params\.|query\.|body\.|input|userId|name)/i,
+    // The SQL body must be allowed to contain quotes. `"... WHERE n = '" + req.x`
+    // is the most common shape of this bug, and excluding quote characters
+    // meant the rule could never match it. `;` and newline still bound the
+    // match to a single statement.
+    pattern: /(?:SELECT|INSERT|UPDATE|DELETE)\s[^;\n]{0,200}['"`]\s*\+\s*(?:req\.|request\.|params\.|query\.|body\.|input|userId|name)/i,
     description: 'A request-derived value is concatenated directly into a SQL statement.',
     recommendation: 'Bind the value as a query parameter instead of concatenating it.',
     cwe: 'CWE-89',
@@ -191,9 +195,32 @@ export const STATIC_RULES: StaticRule[] = [
     severity: 'high',
     confidence: 0.75,
     languages: '*',
-    pattern: /(?:token|secret|password|otp|nonce|salt|key|session)\w*\s*=\s*[^;\n]*(?:Math\.random\s*\(|random\.random\s*\(|rand\.Int\b)/i,
+    // `[^;]` rather than `[^;\n]`: the security-relevant name is often the
+    // enclosing function rather than the assignment target, so the match has to
+    // reach across the line. A semicolon still ends it, which keeps the match
+    // inside one statement and stops an unrelated later Math.random matching.
+    pattern:
+      /(?:token|secret|password|otp|nonce|salt|key|session)\w*\s*[=:(][^;]{0,150}?(?:Math\.random\s*\(|random\.random\s*\(|rand\.Int\b)/i,
     description: 'Math.random and friends are predictable and must not generate secrets.',
     recommendation: 'Use crypto.randomBytes / secrets.token_urlsafe / crypto.rand.Read.',
+    cwe: 'CWE-338',
+  },
+  {
+    id: 'sec.insecure-random.id-idiom',
+    category: 'security',
+    type: 'weak-cryptography',
+    title: 'Identifier generated from Math.random',
+    severity: 'high',
+    confidence: 0.8,
+    languages: JS,
+    // `Math.random().toString(36)` has essentially one use: generating a
+    // random id or token string. Worth flagging on the idiom alone, whatever
+    // the surrounding names are.
+    pattern: /Math\.random\s*\(\s*\)\s*\.toString\s*\(\s*(?:36|16|32)\s*\)/,
+    description:
+      'This is the standard idiom for generating a random identifier, and Math.random is predictable. ' +
+      'An attacker who observes a few values can predict the rest.',
+    recommendation: 'Use crypto.randomUUID() or crypto.randomBytes(n).toString("hex").',
     cwe: 'CWE-338',
   },
   {
