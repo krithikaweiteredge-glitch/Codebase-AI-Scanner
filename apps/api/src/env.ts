@@ -78,6 +78,17 @@ const schema = z.object({
   AI_MAX_OUTPUT_TOKENS: intFromEnv(4096),
 
   /**
+   * Retry and timeout for model requests. Providers are the flakiest
+   * dependency here - a busy model returns 503 and, without this, the engine
+   * discarded a whole review category while still reporting success.
+   * AI_MAX_ATTEMPTS of 1 disables retrying.
+   */
+  AI_MAX_ATTEMPTS: intFromEnv(3),
+  AI_RETRY_BASE_MS: intFromEnv(1500),
+  AI_RETRY_CAP_MS: intFromEnv(20_000),
+  AI_REQUEST_TIMEOUT_MS: intFromEnv(120_000),
+
+  /**
    * Two-stage AI review. Stage one sweeps a compact digest of every file with
    * a cheap model and scores what deserves a real read; stage two reads the
    * winners in full. Without it, file selection is blind to any file that no
