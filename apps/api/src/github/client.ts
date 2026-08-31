@@ -275,6 +275,15 @@ export class GitHubClient {
     return Buffer.from(data.content, 'utf8');
   }
 
+  /** A single commit with its per-file patches, for history scanning. */
+  async getCommit(owner: string, repo: string, sha: string): Promise<GitHubCommit & { files?: GitHubPullFile[] }> {
+    return (
+      await this.request<GitHubCommit & { files?: GitHubPullFile[] }>(
+        `/repos/${enc(owner)}/${enc(repo)}/commits/${encodeURIComponent(sha)}`,
+      )
+    ).data;
+  }
+
   async compareCommits(owner: string, repo: string, base: string, head: string) {
     return (
       await this.request<{

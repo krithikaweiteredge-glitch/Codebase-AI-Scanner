@@ -9,6 +9,8 @@ An AI-powered codebase intelligence, automated review, and security analysis pla
 - **Multi-Model AI Support:** Native integrations with **Google Gemini**, **Groq**, **Anthropic Claude**, **OpenAI**, and an offline **Local fallback**.
 - **Hybrid Retrieval-Augmented Generation (RAG):** Combines `pgvector` dense vector embeddings, `pg_trgm` lexical search, and AST symbol resolution so every AI response cites verifiable code lines.
 - **Automated Security & Bug Scanner:** Deterministic static analysis, high-entropy secret detection, and LLM reasoning for finding vulnerabilities and edge-case defects.
+- **Dependency Vulnerability Scanning (SCA):** Resolves lockfile versions across npm, PyPI, Go, Cargo, RubyGems and Composer and matches them against the [OSV.dev](https://osv.dev) advisory database (GHSA, CVE, RustSec, PyPA) — no API key, no scanner binary required.
+- **Dataflow Analysis (SAST):** Optional [Semgrep](https://semgrep.dev) integration adds taint tracking, catching injections where the untrusted value reaches the sink through other functions — which the single-line pattern rules cannot see. Ships in the Docker image; skipped automatically where the binary is absent.
 - **Code Explorer with Monaco Editor:** VS Code editor in the browser with full syntax highlighting, symbol navigation, and file tree browsing.
 - **Automated PR Reviews:** Automated pull request scanning with line-by-line comments, summaries, and impact analysis.
 - **Architecture & Dependency Visualizer:** Mermaid.js diagrams showing module dependencies, data models, and component hierarchies.

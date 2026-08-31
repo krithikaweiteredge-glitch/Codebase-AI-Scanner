@@ -81,6 +81,52 @@ const schema = z.object({
   EMBEDDING_MODEL: z.string().default('text-embedding-3-small'),
   EMBEDDING_API_KEY: z.string().optional().default(''),
 
+  // Software composition analysis against OSV.dev. The API is public and
+  // unauthenticated, so this needs no key; set SCA_ENABLED=false to opt out of
+  // the outbound requests entirely.
+  SCA_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false')
+    .pipe(z.boolean()),
+  OSV_API_URL: z.string().default('https://api.osv.dev'),
+
+  // Dataflow analysis via semgrep. Enabled by default but skipped
+  // automatically when the binary is absent, which is the case on hosts that
+  // run the plain Node runtime rather than the project's Docker image.
+  SEMGREP_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false')
+    .pipe(z.boolean()),
+  SEMGREP_PATH: z.string().default('semgrep'),
+  /**
+   * Comma-separated rulesets. The default unions the low-noise baseline with
+   * the OWASP set and the infrastructure packs - Dockerfiles, CI workflows,
+   * Terraform and Kubernetes manifests are all indexed already, and were
+   * previously scanned by nothing. `p/security-audit` finds more again, at a
+   * materially higher false-positive rate; add it when you have the appetite.
+   */
+  SEMGREP_CONFIG: z
+    .string()
+    .default('p/default,p/owasp-top-ten,p/secrets,p/dockerfile,p/github-actions,p/terraform,p/kubernetes'),
+  SEMGREP_TIMEOUT_MS: intFromEnv(300_000),
+  SEMGREP_RULE_TIMEOUT_SECONDS: intFromEnv(30),
+  SEMGREP_JOBS: intFromEnv(1),
+  SEMGREP_MAX_FILES: intFromEnv(3000),
+  SEMGREP_MAX_TOTAL_BYTES: intFromEnv(50_000_000),
+
+  /**
+   * How many commits back to scan for secrets that were committed and later
+   * removed. Costs one GitHub API call per commit, so it is bounded; 0
+   * disables history scanning entirely.
+   */
+  SECRET_HISTORY_COMMITS: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? 100 : Number.parseInt(v, 10)))
+    .pipe(z.number().int().min(0).max(1000)),
+
   MAX_REPO_FILES: intFromEnv(6000),
   MAX_FILE_BYTES: intFromEnv(400_000),
   MAX_TOTAL_BYTES: intFromEnv(200_000_000),
@@ -88,11 +134,19 @@ const schema = z.object({
   CONTEXT_TOKEN_BUDGET: intFromEnv(12_000),
 
   REDIS_URL: z.string().optional().default(''),
+
+  /**
+   * Whether this process actually runs queued jobs. With the in-process queue
+   * there is nowhere else for them to go, so the API must keep this on; it
+   * exists for the day a shared queue backend lets a separate worker take over.
+   */
   WORKER_ENABLED: z
     .string()
     .optional()
     .transform((v) => v !== 'false')
     .pipe(z.boolean()),
+  /** Tries per job, including the first. 1 disables retries. */
+  JOB_MAX_ATTEMPTS: intFromEnv(3),
 });
 
 const parsed = schema.safeParse(process.env);

@@ -70,7 +70,7 @@ const RULES: SecretRule[] = [
   {
     id: 'secret.google_api_key',
     label: 'Google API key',
-    pattern: /\b(AIza[0-9A-Za-z_\-]{35})\b/g,
+    pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g,
     severity: 'high',
     confidence: 0.92,
     group: 1,
@@ -78,7 +78,7 @@ const RULES: SecretRule[] = [
   {
     id: 'secret.openai_key',
     label: 'OpenAI/Anthropic API key',
-    pattern: /\b((?:sk-proj-|sk-ant-|sk-)[A-Za-z0-9_\-]{20,})\b/g,
+    pattern: /\b((?:sk-proj-|sk-ant-|sk-)[A-Za-z0-9_-]{20,})\b/g,
     severity: 'critical',
     confidence: 0.9,
     group: 1,

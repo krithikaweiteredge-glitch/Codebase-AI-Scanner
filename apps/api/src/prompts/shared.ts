@@ -50,7 +50,16 @@ export function confidenceLabel(confidence: number): 'high' | 'medium' | 'low' {
  * Likely     - static signal corroborated by AI reasoning, or a very high-confidence AI finding.
  * Potential  - AI-only reasoning; requires human review.
  */
-export function findingStatus(source: 'static' | 'ai' | 'hybrid', confidence: number): 'confirmed' | 'likely' | 'potential' {
+export function findingStatus(
+  source: 'static' | 'ai' | 'hybrid' | 'sca' | 'sast',
+  confidence: number,
+): 'confirmed' | 'likely' | 'potential' {
+  // A resolved version either falls in an advisory's affected range or it does
+  // not - there is no inference step to be wrong about.
+  if (source === 'sca') return confidence >= 0.9 ? 'confirmed' : 'likely';
+  // Deterministic pattern and dataflow matching, but rule precision varies, so
+  // the rule author's own confidence rating decides.
+  if (source === 'sast') return confidence >= 0.9 ? 'confirmed' : 'likely';
   if (source === 'static') return confidence >= 0.9 ? 'confirmed' : 'likely';
   if (source === 'hybrid') return confidence >= 0.75 ? 'likely' : 'potential';
   return confidence >= 0.85 ? 'likely' : 'potential';

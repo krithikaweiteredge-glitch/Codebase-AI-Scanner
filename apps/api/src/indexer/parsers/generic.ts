@@ -55,7 +55,7 @@ const SPECS: LanguageSpec[] = [
       { pattern: /^[ \t]*(?:public|private|protected|internal|open|abstract|final|sealed|data|static|\s)*\b(?:class|interface|enum|object|record)\s+([A-Za-z_]\w*)/gm, kind: 'class', nameGroup: 1 },
       {
         pattern:
-          /^[ \t]*(?:@\w+[^\n]*\n[ \t]*)*(?:public|private|protected|internal|static|final|override|suspend|abstract|synchronized|\s)*[\w<>\[\],.?]+\s+([A-Za-z_]\w*)\s*\([^;{]*\)\s*(?:throws [\w., ]+)?\{/gm,
+          /^[ \t]*(?:@\w+[^\n]*\n[ \t]*)*(?:public|private|protected|internal|static|final|override|suspend|abstract|synchronized|\s)*[\w<>[\],.?]+\s+([A-Za-z_]\w*)\s*\([^;{]*\)\s*(?:throws [\w., ]+)?\{/gm,
         kind: 'method',
         nameGroup: 1,
       },
@@ -73,7 +73,7 @@ const SPECS: LanguageSpec[] = [
     ],
     imports: [
       { pattern: /^\s*import\s+"([^"]+)"/gm, group: 1, kind: 'import' },
-      { pattern: /^\s+(?:[\w.]+\s+)?"([\w./\-]+)"$/gm, group: 1, kind: 'import' },
+      { pattern: /^\s+(?:[\w.]+\s+)?"([\w./-]+)"$/gm, group: 1, kind: 'import' },
     ],
   },
   {
@@ -83,7 +83,7 @@ const SPECS: LanguageSpec[] = [
       { pattern: /^[ \t]*(?:public|internal|private|protected|abstract|sealed|static|partial|\s)*\b(?:class|interface|record|struct|enum)\s+([A-Za-z_]\w*)/gm, kind: 'class', nameGroup: 1 },
       {
         pattern:
-          /^[ \t]*(?:\[[^\]]+\]\s*\n[ \t]*)*(?:public|internal|private|protected|static|virtual|override|async|sealed|\s)+[\w<>\[\],.?]+\s+([A-Za-z_]\w*)\s*\([^;)]*\)\s*\{?/gm,
+          /^[ \t]*(?:\[[^\]]+\]\s*\n[ \t]*)*(?:public|internal|private|protected|static|virtual|override|async|sealed|\s)+[\w<>[\],.?]+\s+([A-Za-z_]\w*)\s*\([^;)]*\)\s*\{?/gm,
         kind: 'method',
         nameGroup: 1,
       },

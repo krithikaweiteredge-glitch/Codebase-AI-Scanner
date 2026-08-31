@@ -1,9 +1,15 @@
 import { buildApp } from './app';
 import { prisma } from './db';
 import { env } from './env';
+import { queueConfigurationWarning } from './jobs/queue';
 
 async function main(): Promise<void> {
   const app = await buildApp();
+
+  // A misconfigured queue has no symptom until an analysis silently never
+  // starts, so it is worth being loud about at boot.
+  const queueWarning = queueConfigurationWarning();
+  if (queueWarning) app.log.error(queueWarning);
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, 'shutting down');

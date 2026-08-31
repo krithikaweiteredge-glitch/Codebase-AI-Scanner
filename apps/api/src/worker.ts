@@ -1,11 +1,15 @@
 /**
- * Standalone worker entry point.
+ * Maintenance / worker entry point.
  *
- * The in-process queue lives inside the API process by default. This entry
- * point exists so the same job handlers can be run as a separate container
- * (docker compose `worker` service) once a shared queue backend is configured;
- * with the in-process queue it drains jobs enqueued in this process only, and
- * otherwise idles while keeping analysis runs from becoming stuck.
+ * Today this is a maintenance sidecar, not a second consumer of the queue.
+ * The in-process queue keeps its pending list in the API process's heap, so
+ * no other container can pick work out of it - what this process actually
+ * does is sweep runs abandoned by a restart and mark them failed, instead of
+ * leaving them stuck at "running" forever.
+ *
+ * It already registers the real job handlers, so the day a shared queue
+ * backend (Redis) exists this becomes a true worker with no other changes:
+ * set WORKER_ENABLED=true here and false on the API.
  */
 import { prisma } from './db';
 import { env } from './env';

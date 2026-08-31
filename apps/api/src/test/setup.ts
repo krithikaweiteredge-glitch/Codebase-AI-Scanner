@@ -8,3 +8,5 @@ process.env.SESSION_SECRET ??= 'test-session-secret-that-is-long-enough-1234';
 process.env.ENCRYPTION_KEY ??= '0'.repeat(64);
 process.env.AI_PROVIDER ??= 'local';
 process.env.EMBEDDING_PROVIDER ??= 'local';
+// Route tests build the real Fastify app; keep its request logging out of the output.
+process.env.LOG_LEVEL ??= 'fatal';

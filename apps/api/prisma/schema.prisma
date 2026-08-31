@@ -353,6 +353,10 @@ model AnalysisFinding {
   resolved      Boolean @default(false)
   metadata      Json?
 
+  /// Stable identity across runs, so user triage survives re-analysis.
+  /// Derived from rule + file + matched code, never from the line number.
+  fingerprint String?
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -364,6 +368,8 @@ model AnalysisFinding {
   @@index([repositoryId, category, severity])
   @@index([runId])
   @@index([reviewId])
+  // Triage carry-forward looks findings up by repository + fingerprint.
+  @@index([repositoryId, fingerprint])
   @@map("analysis_findings")
 }
 

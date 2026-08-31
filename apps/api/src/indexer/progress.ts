@@ -22,6 +22,8 @@ export const INDEXING_STEPS: { key: string; label: string }[] = [
   { key: 'embeddings', label: 'Embeddings generated' },
   { key: 'dependencies', label: 'Dependency graph built' },
   { key: 'static', label: 'Static analysis completed' },
+  { key: 'sca', label: 'Dependency vulnerabilities checked' },
+  { key: 'sast', label: 'Dataflow analysis (semgrep)' },
   { key: 'ai', label: 'AI architecture analysis' },
   { key: 'docs', label: 'Documentation generated' },
   { key: 'scores', label: 'Scores computed' },

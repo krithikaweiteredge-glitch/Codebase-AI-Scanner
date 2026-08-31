@@ -20,6 +20,7 @@ import {
 import { useEffect, useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { CommandPalette } from '@/components/CommandPalette';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { Badge, Button } from '@/components/ui/primitives';
 import { useAuth } from '@/hooks/useAuth';
 import { get } from '@/lib/api';
@@ -176,7 +177,14 @@ export function AppShell() {
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden">
-        <Outlet />
+        {/*
+          Scoped to the routed page so a crash in one view leaves the shell and
+          navigation usable. Keying on the path resets the boundary on
+          navigation, so moving to another page recovers without a reload.
+        */}
+        <ErrorBoundary resetKey={location.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
 
       <CommandPalette

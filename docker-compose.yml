@@ -44,15 +44,22 @@ services:
     environment:
       DATABASE_URL: postgresql://codebase:codebase@postgres:5432/codebase_ai?schema=public
       API_PORT: "4000"
-      WORKER_ENABLED: "false"
+      # The queue is in-process, so the API runs the jobs it enqueues. Setting
+      # this to "false" here would accept analyses and never run them.
+      WORKER_ENABLED: "true"
     ports:
       - "4000:4000"
 
-  worker:
+  # Maintenance sidecar, not a second consumer of the queue: an in-process
+  # queue cannot hand jobs to another container, so this sweeps runs that were
+  # abandoned by an API restart and marks them failed rather than leaving them
+  # stuck at "running". It becomes a real worker once a shared queue backend
+  # (Redis) is wired up, at which point the API can go back to WORKER_ENABLED=false.
+  maintenance:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
-    container_name: codebase-ai-worker
+    container_name: codebase-ai-maintenance
     restart: unless-stopped
     command: ["node", "dist/worker.js"]
     depends_on:
@@ -62,6 +69,8 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://codebase:codebase@postgres:5432/codebase_ai?schema=public
+      # Nothing enqueues here; this process only runs the stale-run sweeper.
+      WORKER_ENABLED: "false"
 
   web:
     build:

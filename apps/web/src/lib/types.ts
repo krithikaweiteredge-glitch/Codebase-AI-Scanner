@@ -99,7 +99,7 @@ export interface Finding {
   confidence: number;
   confidenceLabel: 'high' | 'medium' | 'low';
   status: FindingStatus;
-  source: 'static' | 'ai' | 'hybrid';
+  source: 'static' | 'ai' | 'hybrid' | 'sca' | 'sast';
   cwe: string | null;
   falsePositive: boolean;
   resolved: boolean;

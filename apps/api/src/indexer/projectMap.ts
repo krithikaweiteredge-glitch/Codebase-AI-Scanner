@@ -294,7 +294,7 @@ function collectDependencies(files: readonly IndexedFileSummary[]): Map<string, 
       }
     } else if (base === 'requirements.txt' || base === 'pipfile') {
       for (const line of file.content.split('\n')) {
-        const name = line.trim().split(/[=<>!~\[; ]/)[0];
+        const name = line.trim().split(/[=<>!~[; ]/)[0];
         if (name && !name.startsWith('#')) out.set(name.toLowerCase(), { file: file.path });
       }
     } else if (base === 'pyproject.toml' || base === 'cargo.toml') {

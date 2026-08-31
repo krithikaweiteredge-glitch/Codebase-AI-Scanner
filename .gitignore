@@ -5,6 +5,18 @@ coverage/
 .env
 .env.local
 .env.*.local
+
+# Key material. A GitHub App private key authenticates as the App against every
+# repository it is installed on, so a stray commit is a full compromise - and
+# rewriting history does not undo it. Matches the patterns the indexer already
+# refuses to index (see apps/api/src/indexer/ignore.ts).
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+*.private-key*
+
 *.log
 .DS_Store
 .cache/

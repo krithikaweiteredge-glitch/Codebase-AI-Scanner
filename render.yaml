@@ -39,9 +39,37 @@ services:
         sync: false
       - key: GITHUB_CLIENT_SECRET
         sync: false
+      # GitHub App. Preferred over the OAuth/token flow: installation tokens
+      # are short-lived and scoped to the repositories the user granted.
+      # GITHUB_APP_PRIVATE_KEY must be the PEM on a single line with escaped
+      # newlines - the config loader reads .env line by line.
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_SLUG
+        sync: false
+      - key: GITHUB_APP_CLIENT_ID
+        sync: false
+      - key: GITHUB_APP_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
       - key: AI_PROVIDER
         sync: false
       - key: AI_API_KEY
         sync: false
       - key: AI_MODEL
         sync: false
+      # The queue is in-process, so the API must run its own jobs. Setting this
+      # false here accepts analyses and never runs them.
+      - key: WORKER_ENABLED
+        value: "true"
+      # Dependency scanning against OSV.dev - public API, no key needed.
+      - key: SCA_ENABLED
+        value: "true"
+      # Semgrep is a Python program and this service uses Render's node
+      # runtime, so the binary is absent and the dataflow step skips itself.
+      # Flipped on automatically when running the Docker image instead.
+      - key: SEMGREP_ENABLED
+        value: "false"

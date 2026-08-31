@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { aiEnabled } from '../ai/provider';
 import { AIGenerationUnavailable, generateStructured } from '../ai/structured';
 import { prisma } from '../db';
+import { githubClientForRepository } from '../github/service';
 import { env } from '../env';
 import type { StackProfile } from '../indexer/projectMap';
 import type { RunProgress } from '../indexer/progress';
@@ -14,7 +15,11 @@ import { filterGroundedFindings } from '../search/citations';
 import { buildCodeContext, buildRepositoryOverview } from '../search/context';
 import type { RetrievedChunk } from '../search/hybrid';
 import { findDuplicatePairs, duplicatePairToFinding, type DuplicateCandidateUnit } from './duplicates';
+import { applyPriorTriage, assignFingerprints, type TriageState } from './fingerprint';
+import { scanSecretHistory } from './secretHistory';
 import { computeScores, type Score } from './scores';
+import { runSastScan, SemgrepUnavailable } from './sast';
+import { MAX_ADVISORY_FETCHES, scanDependencies } from './sca';
 import { runStaticRules } from './static/rules';
 import {
   detectDeadFiles,
@@ -32,6 +37,13 @@ export interface AnalysisContext {
   runId: string;
   repositoryName: string;
   stack: StackProfile;
+  /** Owner of the GitHub token used to re-fetch lockfiles, which are not indexed. */
+  userId: string;
+  owner: string;
+  repo: string;
+  commitSha: string | null;
+  /** Triage from the previous run on this branch, keyed by fingerprint. */
+  priorTriage?: ReadonlyMap<string, TriageState>;
 }
 
 export interface AnalysisSummary {
@@ -41,6 +53,28 @@ export interface AnalysisSummary {
   aiUsed: boolean;
   aiRejectedFindings: number;
   scores: Score[];
+  sca: ScaSummary;
+  sast: SastSummary;
+  /** How many findings kept a user's earlier false-positive/resolved decision. */
+  triageCarriedForward: number;
+}
+
+export interface SastSummary {
+  ran: boolean;
+  version: string | null;
+  filesScanned: number;
+  findings: number;
+  dataflowFindings: number;
+  skippedReason?: string;
+}
+
+export interface ScaSummary {
+  ran: boolean;
+  manifests: string[];
+  packagesScanned: number;
+  vulnerablePackages: number;
+  advisories: number;
+  skippedReason?: string;
 }
 
 /** Max AI review batches per category - bounds cost on large repositories. */
@@ -74,7 +108,26 @@ export async function analyzeRepository(ctx: AnalysisContext, progress: RunProgr
   const duplicateLines = pairs.reduce((sum, p) => sum + (p.a.endLine - p.a.startLine + 1), 0);
   drafts.push(...pairs.map(duplicatePairToFinding));
 
+  // ---- secrets in git history -------------------------------------------
+  // Runs inside the static step: it is the same detectors, applied to commits
+  // rather than the working tree.
+  const currentSecrets = new Set(
+    drafts
+      .filter((draft) => draft.type === 'hardcoded-secret' && draft.ruleId)
+      .map((draft) => `${draft.ruleId}|${draft.filePath}`),
+  );
+  const history = await runSecretHistory(ctx, currentSecrets, progress);
+  drafts.push(...history);
+
   await progress.complete('static', `${drafts.length} deterministic findings`);
+
+  // ---- dependency vulnerabilities ----------------------------------------
+  const sca = await runScaStep(ctx, files, progress);
+  drafts.push(...sca.drafts);
+
+  // ---- dataflow analysis -------------------------------------------------
+  const sast = await runSastStep(files, progress);
+  drafts.push(...sast.drafts);
 
   // ---- AI review ---------------------------------------------------------
   await progress.start('ai');
@@ -105,6 +158,12 @@ export async function analyzeRepository(ctx: AnalysisContext, progress: RunProgr
 
   // ---- persist -----------------------------------------------------------
   const deduped = dedupeFindings(drafts);
+
+  // Identity first, then re-apply whatever the user already decided about
+  // these findings on a previous run.
+  assignFingerprints(deduped);
+  const { carried } = applyPriorTriage(deduped, ctx.priorTriage ?? new Map());
+
   const stored = await persistFindings(ctx.repositoryId, ctx.runId, ctx.branchId, deduped);
 
   // ---- scores ------------------------------------------------------------
@@ -152,7 +211,191 @@ export async function analyzeRepository(ctx: AnalysisContext, progress: RunProgr
     aiUsed,
     aiRejectedFindings: aiRejected,
     scores,
+    sca: sca.summary,
+    sast: sast.summary,
+    triageCarriedForward: carried,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Dataflow analysis
+// ---------------------------------------------------------------------------
+
+/**
+ * Semgrep is an optional external binary, so "not installed" is an ordinary
+ * outcome rather than an error - the step records why it was skipped and the
+ * rest of the analysis is unaffected.
+ */
+async function runSastStep(
+  files: readonly AnalyzableFile[],
+  progress: RunProgress,
+): Promise<{ drafts: AnalysisFindingDraft[]; summary: SastSummary }> {
+  const empty: SastSummary = {
+    ran: false,
+    version: null,
+    filesScanned: 0,
+    findings: 0,
+    dataflowFindings: 0,
+  };
+
+  if (!env.SEMGREP_ENABLED) {
+    const reason = 'SEMGREP_ENABLED=false - dataflow analysis is switched off';
+    await progress.skip('sast', reason);
+    return { drafts: [], summary: { ...empty, skippedReason: reason } };
+  }
+
+  await progress.start('sast');
+
+  try {
+    const result = await runSastScan(files, {
+      binary: env.SEMGREP_PATH,
+      config: env.SEMGREP_CONFIG,
+      timeoutMs: env.SEMGREP_TIMEOUT_MS,
+      ruleTimeoutSeconds: env.SEMGREP_RULE_TIMEOUT_SECONDS,
+      jobs: env.SEMGREP_JOBS,
+      maxFiles: env.SEMGREP_MAX_FILES,
+      maxTotalBytes: env.SEMGREP_MAX_TOTAL_BYTES,
+      maxFileBytes: env.MAX_FILE_BYTES,
+    });
+
+    await progress.complete(
+      'sast',
+      `semgrep ${result.version}: ${result.drafts.length} finding(s) across ${result.filesScanned} file(s)` +
+        (result.dataflowFindings ? `, ${result.dataflowFindings} with a tracked dataflow path` : ''),
+    );
+
+    return {
+      drafts: result.drafts,
+      summary: {
+        ran: true,
+        version: result.version,
+        filesScanned: result.filesScanned,
+        findings: result.drafts.length,
+        dataflowFindings: result.dataflowFindings,
+      },
+    };
+  } catch (error) {
+    const reason =
+      error instanceof SemgrepUnavailable
+        ? error.message
+        : `Dataflow analysis failed: ${(error as Error).message}`;
+    await progress.skip('sast', reason.slice(0, 300));
+    return { drafts: [], summary: { ...empty, skippedReason: reason } };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Secrets in git history
+// ---------------------------------------------------------------------------
+
+/**
+ * Best-effort, like the other network-dependent steps: no GitHub access means
+ * the current-tree secret scan still stands on its own.
+ */
+async function runSecretHistory(
+  ctx: AnalysisContext,
+  currentSecrets: ReadonlySet<string>,
+  progress: RunProgress,
+): Promise<AnalysisFindingDraft[]> {
+  if (!env.SECRET_HISTORY_COMMITS || !ctx.commitSha) return [];
+
+  try {
+    const client = await githubClientForRepository(ctx.repositoryId, ctx.userId);
+    const result = await scanSecretHistory(
+      client,
+      {
+        owner: ctx.owner,
+        repo: ctx.repo,
+        commitSha: ctx.commitSha,
+        maxCommits: env.SECRET_HISTORY_COMMITS,
+      },
+      currentSecrets,
+    );
+
+    if (result.drafts.length) {
+      await progress.detail(
+        'static',
+        `${result.drafts.length} secret(s) found in ${result.commitsScanned} commit(s) of history`,
+      );
+    }
+    return result.drafts;
+  } catch {
+    // Rate limited, no token, or a shallow/empty history.
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dependency vulnerabilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Composition analysis is best-effort by design. It reaches two networks that
+ * the rest of the engine does not need (GitHub for lockfiles, OSV for
+ * advisories), and neither being down is a reason to lose an entire analysis
+ * run - the step records why it was skipped and the rest carries on.
+ */
+async function runScaStep(
+  ctx: AnalysisContext,
+  files: readonly AnalyzableFile[],
+  progress: RunProgress,
+): Promise<{ drafts: AnalysisFindingDraft[]; summary: ScaSummary }> {
+  const empty: ScaSummary = {
+    ran: false,
+    manifests: [],
+    packagesScanned: 0,
+    vulnerablePackages: 0,
+    advisories: 0,
+  };
+
+  if (!env.SCA_ENABLED) {
+    const reason = 'SCA_ENABLED=false - dependency scanning is switched off';
+    await progress.skip('sca', reason);
+    return { drafts: [], summary: { ...empty, skippedReason: reason } };
+  }
+
+  await progress.start('sca');
+
+  try {
+    const result = await scanDependencies(
+      {
+        repositoryId: ctx.repositoryId,
+        userId: ctx.userId,
+        owner: ctx.owner,
+        repo: ctx.repo,
+        commitSha: ctx.commitSha,
+      },
+      files,
+      { baseUrl: env.OSV_API_URL, maxDetailFetches: MAX_ADVISORY_FETCHES },
+    );
+
+    if (!result.manifests.length) {
+      const reason = 'No dependency manifests or lockfiles found';
+      await progress.skip('sca', reason);
+      return { drafts: [], summary: { ...empty, skippedReason: reason } };
+    }
+
+    await progress.complete(
+      'sca',
+      `${result.packagesScanned} package(s) checked against OSV - ` +
+        `${result.vulnerablePackages} vulnerable, ${result.advisories} advisor${result.advisories === 1 ? 'y' : 'ies'}`,
+    );
+
+    return {
+      drafts: result.drafts,
+      summary: {
+        ran: true,
+        manifests: result.manifests,
+        packagesScanned: result.packagesScanned,
+        vulnerablePackages: result.vulnerablePackages,
+        advisories: result.advisories,
+      },
+    };
+  } catch (error) {
+    const reason = `Dependency scan unavailable: ${(error as Error).message}`;
+    await progress.skip('sca', reason.slice(0, 300));
+    return { drafts: [], summary: { ...empty, skippedReason: reason } };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +686,13 @@ async function symbolComplexity(
 export function dedupeFindings(drafts: readonly AnalysisFindingDraft[]): AnalysisFindingDraft[] {
   const seen = new Map<string, AnalysisFindingDraft>();
   for (const draft of drafts) {
-    const key = `${draft.category}:${draft.type}:${draft.filePath}:${draft.startLine}`;
+    // Dependency findings are identified by package, not by location: every
+    // package in a lockfile can legitimately land on the same line, so the
+    // location key would collapse unrelated vulnerabilities into one.
+    const key =
+      draft.source === 'sca'
+        ? `sca:${draft.ruleId}:${draft.filePath}`
+        : `${draft.category}:${draft.type}:${draft.filePath}:${draft.startLine}`;
     const existing = seen.get(key);
     if (!existing) {
       seen.set(key, draft);
@@ -504,6 +753,9 @@ export async function persistFindings(
     source: draft.source,
     cwe: draft.cwe ?? null,
     metadata: (draft.metadata ?? {}) as Prisma.InputJsonValue,
+    fingerprint: draft.fingerprint ?? null,
+    falsePositive: draft.falsePositive ?? false,
+    resolved: draft.resolved ?? false,
   }));
 
   for (let i = 0; i < data.length; i += 200) {

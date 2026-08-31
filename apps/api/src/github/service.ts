@@ -42,13 +42,23 @@ export async function githubClientForUser(userId: string, installationId?: strin
     },
   });
 
-  if (user?.githubTokenEnc) {
-    return new GitHubClient(decryptSecret(user.githubTokenEnc));
-  }
-
+  // App installations win over a stored personal token. Installation tokens are
+  // short-lived, scoped to the repositories the user actually granted, and
+  // revoked by uninstalling - none of which is true of a PAT. Checking the
+  // token first would mean a user who installed the App still transparently
+  // used their old token, which is the opposite of connecting GitHub directly.
   const firstInstallation = user?.installations?.[0];
   if (firstInstallation) {
-    return githubClientForInstallation(firstInstallation.installationId);
+    try {
+      return await githubClientForInstallation(firstInstallation.installationId);
+    } catch {
+      // Installation revoked or the App is misconfigured - fall through to the
+      // token so an existing connection keeps working rather than breaking.
+    }
+  }
+
+  if (user?.githubTokenEnc) {
+    return new GitHubClient(decryptSecret(user.githubTokenEnc));
   }
 
   throw new AppError(

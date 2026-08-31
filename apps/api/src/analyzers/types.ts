@@ -1,6 +1,10 @@
 export type FindingCategory = 'security' | 'bug' | 'performance' | 'duplicate' | 'test' | 'quality';
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
-export type FindingSource = 'static' | 'ai' | 'hybrid';
+/**
+ * `sca`  - composition analysis: a dependency matched against an advisory database.
+ * `sast` - an external dataflow engine (semgrep) traced a value to a sink.
+ */
+export type FindingSource = 'static' | 'ai' | 'hybrid' | 'sca' | 'sast';
 export type FindingStatus = 'confirmed' | 'likely' | 'potential';
 
 export interface AnalysisFindingDraft {
@@ -26,6 +30,11 @@ export interface AnalysisFindingDraft {
   source: FindingSource;
   cwe?: string;
   metadata?: Record<string, unknown>;
+  /** Stable identity across runs; see analyzers/fingerprint.ts. */
+  fingerprint?: string;
+  /** Carried forward from a previous run's triage, not set by detectors. */
+  falsePositive?: boolean;
+  resolved?: boolean;
 }
 
 export interface AnalyzableFile {

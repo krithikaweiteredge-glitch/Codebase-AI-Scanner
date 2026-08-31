@@ -193,7 +193,16 @@ export function SeverityBadge({ severity, className }: { severity: string; class
  */
 export function StatusBadge({ status, source }: { status: string; source?: string }) {
   const tone = status === 'confirmed' ? 'ok' : status === 'likely' ? 'warn' : 'neutral';
-  const label = source === 'static' ? `${status} · static` : source === 'hybrid' ? `${status} · static+AI` : `${status} · AI`;
+  const label =
+    source === 'static'
+      ? `${status} · static`
+      : source === 'hybrid'
+        ? `${status} · static+AI`
+        : source === 'sca'
+          ? `${status} · advisory`
+          : source === 'sast'
+            ? `${status} · dataflow`
+            : `${status} · AI`;
   return <Badge tone={tone}>{label}</Badge>;
 }
 

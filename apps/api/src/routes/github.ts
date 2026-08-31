@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAuth } from '../auth/session';
+import { attachUser, requireAuth } from '../auth/session';
 import { prisma } from '../db';
 import { env, githubAppConfigured, githubOAuthConfigured, primaryWebOrigin } from '../env';
 import { beginOAuth, consumeOAuthState, exchangeCodeForToken } from '../github/oauth';
@@ -62,8 +62,16 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     return { installUrl, configured: true };
   });
 
-  /** GitHub App post-installation redirect handler. */
-  app.get('/api/github/app/callback', async (request, reply) => {
+  /**
+   * GitHub App post-installation redirect handler.
+   *
+   * `attachUser` is what makes the server-side link below possible: without it
+   * `request.user` is always undefined and the installation could only be
+   * linked by the frontend on the following page load. GitHub sends the
+   * browser here as a top-level GET, which carries the session cookie under
+   * both `SameSite=Lax` (local) and `SameSite=None` (cross-site production).
+   */
+  app.get('/api/github/app/callback', { preHandler: attachUser }, async (request, reply) => {
     const query = z
       .object({
         installation_id: z.string().optional(),
@@ -110,28 +118,51 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     return { success: true };
   });
 
-  /** GitHub Webhook endpoint for events (installations, PR reviews, push). */
-  app.post('/api/github/webhook', async (request, reply) => {
-    const signature = request.headers['x-hub-signature-256'] as string | undefined;
-    const rawBody = typeof request.body === 'string' ? request.body : JSON.stringify(request.body);
-
-    if (!verifyWebhookSignature(rawBody, signature)) {
-      return reply.code(401).send({ error: 'Invalid webhook signature' });
-    }
-
-    const event = request.headers['x-github-event'] as string;
-    const payload = request.body as Record<string, any>;
-
-    request.log.info({ event, action: payload?.action }, 'Received GitHub Webhook');
-
-    if (event === 'installation' && payload.action === 'deleted') {
-      const instId = String(payload.installation?.id);
-      if (instId) {
-        await prisma.gitHubInstallation.deleteMany({ where: { installationId: instId } });
+  /**
+   * GitHub Webhook endpoint for events (installations, PR reviews, push).
+   *
+   * Registered in its own scope so it can keep the raw request bytes. Fastify
+   * parses JSON before the handler runs, and HMAC has to be computed over
+   * exactly what GitHub signed - re-serialising the parsed object is not
+   * guaranteed to produce identical bytes, which would reject real deliveries.
+   */
+  await app.register(async (scoped) => {
+    scoped.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_request, body, done) => {
+      const raw = body as Buffer;
+      try {
+        done(null, { raw, parsed: JSON.parse(raw.toString('utf8')) as Record<string, unknown> });
+      } catch (error) {
+        done(error as Error);
       }
-    }
+    });
 
-    return reply.send({ ok: true });
+    scoped.post('/api/github/webhook', async (request, reply) => {
+      if (!env.GITHUB_WEBHOOK_SECRET) {
+        // Distinct from 401 so an operator can tell "misconfigured" from
+        // "forged" in GitHub's delivery log.
+        request.log.error('GitHub webhook received but GITHUB_WEBHOOK_SECRET is not set; rejecting');
+        return reply.code(503).send({ error: 'Webhook secret is not configured on this server' });
+      }
+
+      const { raw, parsed } = request.body as { raw: Buffer; parsed: Record<string, any> };
+      const signature = request.headers['x-hub-signature-256'] as string | undefined;
+
+      if (!verifyWebhookSignature(raw, signature)) {
+        return reply.code(401).send({ error: 'Invalid webhook signature' });
+      }
+
+      const event = request.headers['x-github-event'] as string;
+      request.log.info({ event, action: parsed?.action }, 'Received GitHub Webhook');
+
+      if (event === 'installation' && parsed.action === 'deleted') {
+        const instId = parsed.installation?.id ? String(parsed.installation.id) : '';
+        if (instId) {
+          await prisma.gitHubInstallation.deleteMany({ where: { installationId: instId } });
+        }
+      }
+
+      return reply.send({ ok: true });
+    });
   });
 
   app.get('/api/github/connect', { preHandler: requireAuth }, async (request, reply) => {

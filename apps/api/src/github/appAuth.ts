@@ -131,12 +131,18 @@ export async function getInstallationInfo(installationId: string): Promise<GitHu
 /**
  * Verifies an incoming webhook HMAC SHA-256 signature from GitHub.
  */
-export function verifyWebhookSignature(payload: string, signature: string | undefined): boolean {
-  if (!env.GITHUB_WEBHOOK_SECRET) return true;
+export function verifyWebhookSignature(payload: string | Buffer, signature: string | undefined): boolean {
+  // Fail closed. Without a secret there is no way to tell a real delivery from
+  // a forged one, and this endpoint mutates state - returning true here meant
+  // anyone on the internet could post a synthetic "installation deleted" event
+  // and unlink another user's GitHub account.
+  if (!env.GITHUB_WEBHOOK_SECRET) return false;
   if (!signature) return false;
 
   const hmac = crypto.createHmac('sha256', env.GITHUB_WEBHOOK_SECRET);
-  hmac.update(payload, 'utf8');
+  // Must hash the bytes GitHub actually signed. Re-serialising a parsed body
+  // is not guaranteed to reproduce them.
+  hmac.update(typeof payload === 'string' ? Buffer.from(payload, 'utf8') : payload);
   const expected = `sha256=${hmac.digest('hex')}`;
 
   try {

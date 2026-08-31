@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets a maintainer re-run the suite without pushing a commit.
+  workflow_dispatch:
+
+# A new push to the same branch makes an in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The API's config loader validates these at import time, so the test run
+  # needs syntactically valid values. Nothing here reaches a real service:
+  # unit tests never open a socket, and the route tests fake the database.
+  DATABASE_URL: postgresql://test:test@localhost:5432/test
+  SESSION_SECRET: ci-session-secret-that-is-long-enough-1234
+  ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+  AI_PROVIDER: local
+  EMBEDDING_PROVIDER: local
+  LOG_LEVEL: fatal
+
+jobs:
+  verify:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the engines field in package.json and the Docker image.
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Every workspace typechecks against the generated Prisma client, so it
+      # has to exist before tsc runs.
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Catches the class of break that only shows up in a production build -
+      # the deploy failures this repo has already hit more than once.
+      - name: Build
+        run: npm run build
+
+  # Runs the project's own dependency scanner against itself, using the same
+  # OSV database the product uses. Advisory only: a newly published CVE should
+  # be visible on the PR, not a broken pipeline.
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high

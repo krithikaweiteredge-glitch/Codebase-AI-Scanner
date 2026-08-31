@@ -12,12 +12,23 @@ const KEY = Buffer.from(env.ENCRYPTION_KEY, 'hex');
 const ALGO = 'aes-256-gcm';
 
 /**
+ * Full-length GCM tag, in bytes.
+ *
+ * Node accepts shorter tags (4, 8, 12...) and verifies against whatever length
+ * it is given, so a payload carrying a 4-byte tag would be authenticated with
+ * only 32 bits of integrity. Pinning the length - and rejecting anything else
+ * before it reaches the cipher - keeps forgery resistance at the full 128 bits
+ * regardless of what the stored payload claims.
+ */
+const AUTH_TAG_BYTES = 16;
+
+/**
  * Encrypt a secret (e.g. a GitHub access token) for storage at rest.
  * Format: v1.<iv-b64>.<tag-b64>.<ciphertext-b64>
  */
 export function encryptSecret(plaintext: string): string {
   const iv = randomBytes(12);
-  const cipher = createCipheriv(ALGO, KEY, iv);
+  const cipher = createCipheriv(ALGO, KEY, iv, { authTagLength: AUTH_TAG_BYTES });
   const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `v1.${iv.toString('base64')}.${tag.toString('base64')}.${enc.toString('base64')}`;
@@ -29,7 +40,9 @@ export function decryptSecret(payload: string): string {
   const iv = Buffer.from(parts[1] as string, 'base64');
   const tag = Buffer.from(parts[2] as string, 'base64');
   const data = Buffer.from(parts[3] as string, 'base64');
-  const decipher = createDecipheriv(ALGO, KEY, iv);
+  // Refuse a truncated tag outright rather than letting GCM verify against it.
+  if (tag.length !== AUTH_TAG_BYTES) throw new Error('Malformed encrypted payload');
+  const decipher = createDecipheriv(ALGO, KEY, iv, { authTagLength: AUTH_TAG_BYTES });
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
 }
