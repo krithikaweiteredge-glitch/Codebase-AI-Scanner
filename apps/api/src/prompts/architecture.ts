@@ -35,7 +35,9 @@ export const architectureSchema = z.object({
               startLine: z.number().int().positive().nullable().optional(),
             }),
           )
-          .min(2)
+          // A one-step flow says little, but rejecting the entire report because one
+          // flow came back short loses the other seven with it.
+          .min(1)
           .max(14),
       }),
     )

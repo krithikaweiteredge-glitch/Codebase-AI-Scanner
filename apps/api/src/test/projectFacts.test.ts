@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { architectureSchema } from '../prompts/architecture';
 import { deterministicMermaid, deterministicNarrative, type DependencyGraph } from '../analyzers/architecture';
 import { deterministicSection } from '../analyzers/documentation';
 import { detectRoutes, routeGroup } from '../indexer/apiRoutes';
@@ -275,5 +276,24 @@ describe('static assets and stylesheets', () => {
 
   it('still prefers a directory convention over the file extension', () => {
     expect(detectRole('src/components/Button.css', '.b {}').role).toBe('component');
+  });
+});
+
+describe('architecture schema tolerance', () => {
+  const base = {
+    summary: 'A repository with a backend and a frontend, wired together over HTTP.',
+    layers: [],
+    directoryPurposes: [],
+    flows: [],
+    mermaid: 'flowchart TD\n  A --> B',
+    risks: [],
+  };
+
+  it('keeps a one-step flow rather than discarding the whole report', () => {
+    const parsed = architectureSchema.parse({
+      ...base,
+      flows: [{ name: 'Login', steps: [{ label: 'POST /api/login' }] }],
+    });
+    expect(parsed.flows[0]!.steps).toHaveLength(1);
   });
 });
