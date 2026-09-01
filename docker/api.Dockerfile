@@ -13,11 +13,20 @@ WORKDIR /app/apps/api
 # semgrep powers the dataflow analysis step. It is a Python program, so it is
 # installed here rather than through npm; the API detects it at runtime and
 # skips that step cleanly on images or hosts that do not have it.
+#
+# The version is pinned because semgrep's findings are user-facing: an
+# unpinned install lets two builds of the same commit, a month apart, report
+# different vulnerabilities on the same code. Bump it deliberately.
+ARG SEMGREP_VERSION=1.175.0
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates python3 python3-pip \
-  && pip3 install --break-system-packages --no-cache-dir semgrep \
+  && pip3 install --break-system-packages --no-cache-dir "semgrep==${SEMGREP_VERSION}" \
   && apt-get purge -y python3-pip && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*
+# Prove the binary survives the purge and autoremove above. Without this the
+# first sign of a broken install is "semgrep is not installed or not on PATH"
+# during an analysis, long after the image shipped.
+RUN semgrep --version
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/apps/api/node_modules /app/apps/api/node_modules
