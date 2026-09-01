@@ -3,7 +3,7 @@ import { aiEnabled } from '../ai/provider';
 import { AIGenerationUnavailable, generateStructured } from '../ai/structured';
 import { prisma } from '../db';
 import { env } from '../env';
-import { normaliseStackProfile, type StackProfile } from '../indexer/projectMap';
+import { normaliseStackProfile } from '../indexer/projectMap';
 import {
   buildChatPrompt,
   buildExtractiveAnswer,

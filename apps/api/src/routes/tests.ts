@@ -4,7 +4,7 @@ import { generateTestSuggestions } from '../analyzers/tests';
 import { requireAuth } from '../auth/session';
 import { prisma } from '../db';
 import { badRequest } from '../errors';
-import { normaliseStackProfile, type StackProfile } from '../indexer/projectMap';
+import { normaliseStackProfile } from '../indexer/projectMap';
 import { loadRepository, resolveBranch } from '../lib/access';
 
 const idParam = z.object({ id: z.string().uuid() });

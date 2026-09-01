@@ -7,7 +7,7 @@ import { env } from '../env';
 import { badRequest, conflict, notFound } from '../errors';
 import { githubClientForUser } from '../github/service';
 import { DEFAULT_IGNORE_PATTERNS } from '../indexer/ignore';
-import { normaliseStackProfile, type StackProfile } from '../indexer/projectMap';
+import { normaliseStackProfile } from '../indexer/projectMap';
 import { enqueueAnalysis } from '../jobs/analysisJob';
 import { loadRepository, resolveBranch } from '../lib/access';
 import { grepFiles, findSymbols, hybridSearch } from '../search/hybrid';
