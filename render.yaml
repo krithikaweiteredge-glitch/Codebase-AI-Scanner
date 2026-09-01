@@ -2,29 +2,24 @@
 # Vercel (see vercel.json), so this file only describes the API service.
 #
 # Import it from the Render dashboard: New > Blueprint > pick this repo.
-# It pins the build and start commands together, which keeps them from drifting
-# apart in the dashboard (a web-only build command plus `npm run start:api`
-# is what produced "Cannot find module .../apps/api/dist/index.js").
+# The service runs the Docker image, not Render's node runtime. semgrep is a
+# Python program: on the node runtime Render provisions Python for the build
+# only, outside the project directory, so a venv built there has its
+# interpreter symlink dangle at runtime and the dataflow step can never run.
+# The image has semgrep installed and version-checked at build time.
 services:
   - type: web
     name: codebase-ai-api
-    runtime: node
+    runtime: docker
     plan: free
-    # Build from the repo root so npm workspaces resolve; `build:api` runs
-    # `prisma generate` and compiles apps/api/src -> apps/api/dist.
-    # Migrations run here because preDeployCommand needs a paid instance type.
-    #
-    # semgrep is a Python program and this is the node runtime, so it is built
-    # into a venv under the project directory - the only path Render carries
-    # from build to runtime. SEMGREP_PATH below points at it. The install is
-    # allowed to fail: a pip hiccup should cost the dataflow step, not the
-    # deploy, and the skipped step records why. Keep the version in step with
-    # docker/api.Dockerfile.
-    buildCommand: >-
-      (python3 -m venv .venv && .venv/bin/pip install --no-cache-dir semgrep==1.175.0)
-      || echo 'semgrep unavailable, the dataflow step will skip';
-      npm ci && npm run db:deploy && npm run build:api
-    startCommand: npm run start:api
+    dockerfilePath: ./docker/api.Dockerfile
+    # The Dockerfile copies apps/api and the workspace manifests, so the build
+    # context has to be the repository root.
+    dockerContext: .
+    # The image's CMD is just `node dist/index.js`. Migrations ran in the old
+    # buildCommand and have nowhere else to go: preDeployCommand needs a paid
+    # instance type, so they run here, before the server starts.
+    dockerCommand: sh -c "/app/node_modules/.bin/prisma migrate deploy && node dist/index.js"
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
@@ -73,6 +68,12 @@ services:
         sync: false
       - key: AI_MODEL
         sync: false
+      # The architecture report is a large JSON document: a 4000-character
+      # summary, a 6000-character diagram and up to 40 directory entries. The
+      # 4096 default truncates it mid-document, which is not valid JSON, so the
+      # whole narrative is discarded.
+      - key: AI_MAX_OUTPUT_TOKENS
+        value: "16384"
       # The queue is in-process, so the API must run its own jobs. Setting this
       # false here accepts analyses and never runs them.
       - key: WORKER_ENABLED
@@ -84,5 +85,6 @@ services:
       # ever fails the binary is absent and the step skips itself cleanly.
       - key: SEMGREP_ENABLED
         value: "true"
+      # Installed globally in the image, so the plain name resolves.
       - key: SEMGREP_PATH
-        value: /opt/render/project/src/.venv/bin/semgrep
+        value: semgrep
