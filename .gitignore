@@ -30,3 +30,6 @@ id_rsa*
 .cache/
 .tmp/
 apps/api/prisma/.tmp/
+
+# Python venv built by the Render build command (see render.yaml).
+.venv/
