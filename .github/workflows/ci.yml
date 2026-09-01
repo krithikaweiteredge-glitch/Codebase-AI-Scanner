@@ -92,3 +92,24 @@ jobs:
 
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+
+  # The API image is the one deployable artifact here that nothing else
+  # verifies, and semgrep lives only inside it. Left unbuilt, a broken install
+  # first shows up as "semgrep is not installed or not on PATH" in someone's
+  # analysis, long after the image shipped.
+  docker-image:
+    name: Build API image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -f docker/api.Dockerfile -t codebase-ai-api:ci .
+
+      # The Dockerfile already runs this during the build. Repeating it against
+      # the finished image proves the binary survived into the runtime stage
+      # and is on PATH for the process that actually runs the analysis.
+      - name: Semgrep is runnable in the shipped image
+        run: docker run --rm codebase-ai-api:ci semgrep --version
