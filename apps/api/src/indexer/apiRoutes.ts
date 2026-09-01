@@ -165,11 +165,33 @@ export function detectRoutes(content: string, language: Language): DetectedRoute
   return routes.sort((a, b) => a.line - b.line);
 }
 
+/**
+ * The handler's name, when the route refers to one. An inline callback has no
+ * name - scanning into its body just returned the first parameter, so every
+ * Fastify route came back as "handled by request()".
+ */
 function cleanHandler(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
-  const trimmed = raw.trim();
-  const identifier = trimmed.match(/([A-Za-z_$][\w$.]*)\s*(?:\)|,|$)/);
-  if (identifier?.[1]) return identifier[1];
-  const named = trimmed.match(/\b([A-Za-z_$][\w$]*)\b/);
-  return named?.[1];
+  const trimmed = raw.trim().replace(/^,\s*/, '');
+  if (!trimmed || /^(async\b|function\b|\(|\{|\[)/.test(trimmed)) return undefined;
+  return trimmed.match(/^([A-Za-z_$][\w$.]*)\s*(?:\)|,|$)/)?.[1];
+}
+
+/** Path prefixes that group nothing: every endpoint in the app shares them. */
+const GENERIC_PREFIXES = new Set(['api', 'rest', 'graphql', 'v1', 'v2', 'v3', 'internal', 'public']);
+
+/**
+ * The segment an endpoint belongs under. Grouping on the first segment alone
+ * put all 64 endpoints of an `/api/...` service into a single group, which made
+ * the workflow and flow views useless.
+ */
+export function routeGroup(routePath: string): string {
+  const segments = routePath.split('/').filter(Boolean);
+  for (const segment of segments) {
+    const name = segment.toLowerCase();
+    if (GENERIC_PREFIXES.has(name)) continue;
+    if (/^[:{*]/.test(segment)) continue;
+    return segment;
+  }
+  return segments[0] ?? 'root';
 }

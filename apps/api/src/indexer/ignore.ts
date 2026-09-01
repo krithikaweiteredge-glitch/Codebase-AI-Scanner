@@ -30,6 +30,15 @@ export const DEFAULT_IGNORE_PATTERNS = [
   // secrets - never indexed, never sent anywhere
   '.env',
   '.env.*',
+  // ...except the committed templates, which hold names and no values. They are
+  // the repository's own statement of its configuration contract, and the
+  // Environment Variables docs section is written from them.
+  '!.env.example',
+  '!.env.sample',
+  '!.env.template',
+  '!*.env.example',
+  '!*.env.sample',
+  '!*.env.template',
   '*.pem',
   '*.key',
   '*.p12',

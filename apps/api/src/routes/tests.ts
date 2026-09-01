@@ -4,7 +4,7 @@ import { generateTestSuggestions } from '../analyzers/tests';
 import { requireAuth } from '../auth/session';
 import { prisma } from '../db';
 import { badRequest } from '../errors';
-import type { StackProfile } from '../indexer/projectMap';
+import { normaliseStackProfile, type StackProfile } from '../indexer/projectMap';
 import { loadRepository, resolveBranch } from '../lib/access';
 
 const idParam = z.object({ id: z.string().uuid() });
@@ -33,7 +33,7 @@ export async function testRoutes(app: FastifyInstance): Promise<void> {
       repositoryId: id,
       branchId: branch.id,
       repositoryName: repository.fullName,
-      stack: insight.data as unknown as StackProfile,
+      stack: normaliseStackProfile(insight.data),
       filePath: body.filePath,
       ...(body.symbolName ? { symbolName: body.symbolName } : {}),
     });

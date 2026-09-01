@@ -44,6 +44,24 @@ export interface DirectorySummary {
   totalLines: number;
 }
 
+/** A command the repository itself declares, e.g. an npm script or a make target. */
+export interface RunScript {
+  /** Manifest the command was read from. */
+  file: string;
+  /** How the command is invoked, e.g. "npm run", "make". */
+  runner: string;
+  name: string;
+  /** The literal command body, for context. Empty for make targets. */
+  command: string;
+}
+
+/** A language runtime the manifests pin, e.g. Node.js >=20.11. */
+export interface RuntimeRequirement {
+  name: string;
+  version: string;
+  file: string;
+}
+
 export interface StackProfile {
   projectTypes: string[];
   languages: LanguageStat[];
@@ -58,6 +76,14 @@ export interface StackProfile {
   envVars: { name: string; files: string[] }[];
   routes: (DetectedRoute & { file: string })[];
   directories: DirectorySummary[];
+  /** Dependency manifests found, e.g. package.json, go.mod, Gemfile. */
+  manifestFiles: string[];
+  /** Runtimes the manifests pin a version for. */
+  runtimes: RuntimeRequirement[];
+  /** Declared build/run/test commands, in manifest order. */
+  scripts: RunScript[];
+  dockerFiles: string[];
+  ciFiles: string[];
   hasDocker: boolean;
   hasCI: boolean;
   hasTests: boolean;
@@ -184,6 +210,45 @@ const ENV_PATTERNS: RegExp[] = [
 ];
 
 /** Build the deterministic project map that grounds every AI explanation. */
+/**
+ * Coerce a stored stack profile back into the current shape.
+ *
+ * Profiles are persisted as JSON on `repository_insight` and read back with a
+ * cast, so a repository indexed before a field existed deserialises without it
+ * and the type system cannot see the hole. Every consumer would otherwise have
+ * to guard each array it touches. Apply this wherever the stored JSON enters
+ * the code; a re-index refreshes the real values.
+ */
+export function normaliseStackProfile(raw: unknown): StackProfile {
+  const stored = (raw ?? {}) as Partial<StackProfile>;
+  const list = <T>(value: T[] | undefined): T[] => (Array.isArray(value) ? value : []);
+
+  return {
+    projectTypes: list(stored.projectTypes),
+    languages: list(stored.languages),
+    frameworks: list(stored.frameworks),
+    packageManagers: list(stored.packageManagers),
+    testFrameworks: list(stored.testFrameworks),
+    databases: list(stored.databases),
+    externalServices: list(stored.externalServices),
+    authMechanisms: list(stored.authMechanisms),
+    entryPoints: list(stored.entryPoints),
+    configFiles: list(stored.configFiles),
+    envVars: list(stored.envVars),
+    routes: list(stored.routes),
+    directories: list(stored.directories),
+    manifestFiles: list(stored.manifestFiles),
+    runtimes: list(stored.runtimes),
+    scripts: list(stored.scripts),
+    dockerFiles: list(stored.dockerFiles),
+    ciFiles: list(stored.ciFiles),
+    hasDocker: stored.hasDocker ?? false,
+    hasCI: stored.hasCI ?? false,
+    hasTests: stored.hasTests ?? false,
+    monorepo: stored.monorepo ?? false,
+  };
+}
+
 export function buildStackProfile(files: readonly IndexedFileSummary[]): StackProfile {
   const deps = collectDependencies(files);
   const importSet = new Map<string, string[]>();
@@ -245,8 +310,20 @@ export function buildStackProfile(files: readonly IndexedFileSummary[]): StackPr
 
   const envVars = collectEnvVars(files);
   const frameworks = match(FRAMEWORKS);
-  const hasDocker = files.some((f) => /(^|\/)(Dockerfile|docker-compose\.ya?ml)$/i.test(f.path));
-  const hasCI = files.some((f) => /^\.github\/workflows\//.test(f.path) || /(^|\/)(\.gitlab-ci\.yml|Jenkinsfile|azure-pipelines\.yml)$/.test(f.path));
+  const dockerFiles = files
+    .filter((f) => /(^|\/)(Dockerfile[\w.-]*|docker-compose[\w.-]*\.ya?ml)$/i.test(f.path))
+    .map((f) => f.path)
+    .slice(0, 20);
+  const ciFiles = files
+    .filter(
+      (f) =>
+        /^\.github\/workflows\/.+\.ya?ml$/.test(f.path) ||
+        /(^|\/)(\.gitlab-ci\.yml|Jenkinsfile|azure-pipelines\.yml|\.circleci\/config\.yml|\.travis\.yml)$/.test(f.path),
+    )
+    .map((f) => f.path)
+    .slice(0, 20);
+  const hasDocker = dockerFiles.length > 0;
+  const hasCI = ciFiles.length > 0;
   const hasTests = files.some((f) => f.isTest);
   const monorepo =
     files.some((f) => /(^|\/)(pnpm-workspace\.yaml|lerna\.json|turbo\.json|nx\.json)$/.test(f.path)) ||
@@ -266,11 +343,157 @@ export function buildStackProfile(files: readonly IndexedFileSummary[]): StackPr
     envVars,
     routes,
     directories: summariseDirectories(files),
+    manifestFiles: files.filter((f) => MANIFEST_NAMES.has(path.basename(f.path).toLowerCase())).map((f) => f.path).slice(0, 40),
+    runtimes: detectRuntimes(files),
+    scripts: detectScripts(files),
+    dockerFiles,
+    ciFiles,
     hasDocker,
     hasCI,
     hasTests,
     monorepo,
   };
+}
+
+/** Dependency manifests, keyed by lowercased basename. */
+const MANIFEST_NAMES = new Set([
+  'package.json',
+  'requirements.txt',
+  'pipfile',
+  'pyproject.toml',
+  'setup.py',
+  'go.mod',
+  'cargo.toml',
+  'gemfile',
+  'composer.json',
+  'pom.xml',
+  'build.gradle',
+  'build.gradle.kts',
+  'build.sbt',
+  'mix.exs',
+  'pubspec.yaml',
+]);
+
+/**
+ * Runtime versions the repository pins. Read only from manifests that state one
+ * explicitly - an absent entry means the repository does not pin a version, not
+ * that any version will do.
+ */
+function detectRuntimes(files: readonly IndexedFileSummary[]): RuntimeRequirement[] {
+  const out: RuntimeRequirement[] = [];
+  const seen = new Set<string>();
+  const add = (name: string, version: string | undefined, file: string) => {
+    const trimmed = version?.trim();
+    if (!trimmed || seen.has(name)) return;
+    seen.add(name);
+    out.push({ name, version: trimmed.slice(0, 60), file });
+  };
+
+  for (const file of files) {
+    const base = path.basename(file.path).toLowerCase();
+
+    if (base === 'package.json') {
+      try {
+        const pkg = JSON.parse(file.content) as { engines?: Record<string, string> };
+        add('Node.js', pkg.engines?.node, file.path);
+        if (pkg.engines?.npm) add('npm', pkg.engines.npm, file.path);
+      } catch {
+        /* malformed manifest - ignore */
+      }
+    } else if (base === '.nvmrc' || base === '.node-version') {
+      add('Node.js', file.content.split('\n')[0], file.path);
+    } else if (base === 'pyproject.toml') {
+      add('Python', file.content.match(/^\s*requires-python\s*=\s*["']([^"']+)["']/m)?.[1], file.path);
+      add('Python', file.content.match(/^\s*python\s*=\s*["']([^"']+)["']/m)?.[1], file.path);
+    } else if (base === 'setup.py') {
+      add('Python', file.content.match(/python_requires\s*=\s*["']([^"']+)["']/)?.[1], file.path);
+    } else if (base === '.python-version') {
+      add('Python', file.content.split('\n')[0], file.path);
+    } else if (base === 'go.mod') {
+      add('Go', file.content.match(/^go\s+([\d.]+)/m)?.[1], file.path);
+    } else if (base === 'cargo.toml') {
+      add('Rust', file.content.match(/^\s*rust-version\s*=\s*["']([^"']+)["']/m)?.[1], file.path);
+    } else if (base === 'pom.xml') {
+      add(
+        'Java',
+        file.content.match(/<(?:java\.version|maven\.compiler\.(?:source|release))>([^<]+)</)?.[1],
+        file.path,
+      );
+    } else if (base === 'gemfile' || base === '.ruby-version') {
+      add('Ruby', file.content.match(/^ruby\s+["']([^"']+)["']/m)?.[1] ?? (base === '.ruby-version' ? file.content.split('\n')[0] : undefined), file.path);
+    } else if (base === 'composer.json') {
+      try {
+        const pkg = JSON.parse(file.content) as { require?: Record<string, string> };
+        add('PHP', pkg.require?.php, file.path);
+      } catch {
+        /* malformed manifest - ignore */
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * The commands the repository declares for itself. These are what an
+ * Installation or Deployment section has to quote - inventing `npm start` for a
+ * repository whose only script is `serve` is exactly the failure mode here.
+ */
+function detectScripts(files: readonly IndexedFileSummary[]): RunScript[] {
+  const out: RunScript[] = [];
+  const runner = nodeRunner(files);
+
+  for (const file of files) {
+    const base = path.basename(file.path).toLowerCase();
+
+    if (base === 'package.json') {
+      try {
+        const pkg = JSON.parse(file.content) as { scripts?: Record<string, string> };
+        for (const [name, command] of Object.entries(pkg.scripts ?? {})) {
+          if (typeof command !== 'string') continue;
+          out.push({ file: file.path, runner, name, command: command.slice(0, 300) });
+        }
+      } catch {
+        /* malformed manifest - ignore */
+      }
+    } else if (base === 'makefile') {
+      for (const m of file.content.matchAll(/^([a-zA-Z][\w.-]*)\s*:(?!=)/gm)) {
+        if (m[1]) out.push({ file: file.path, runner: 'make', name: m[1], command: '' });
+      }
+    } else if (base === 'taskfile.yml' || base === 'taskfile.yaml') {
+      for (const m of file.content.matchAll(/^ {2}([a-zA-Z][\w:-]*):\s*$/gm)) {
+        if (m[1]) out.push({ file: file.path, runner: 'task', name: m[1], command: '' });
+      }
+    }
+
+    if (out.length >= 200) break;
+  }
+
+  return out.slice(0, 200);
+}
+
+/**
+ * Which Node package manager to quote. Lockfiles are deliberately never indexed
+ * (see DEFAULT_IGNORE_PATTERNS), so this reads the signals that do survive
+ * indexing rather than guessing npm for every JavaScript repository.
+ */
+function nodeRunner(files: readonly IndexedFileSummary[]): string {
+  for (const file of files) {
+    if (path.basename(file.path) !== 'package.json') continue;
+    try {
+      const declared = (JSON.parse(file.content) as { packageManager?: string }).packageManager;
+      const name = declared?.split('@')[0];
+      if (name === 'pnpm' || name === 'yarn' || name === 'bun' || name === 'npm') {
+        return name === 'npm' ? 'npm run' : name === 'yarn' ? 'yarn' : `${name} run`;
+      }
+    } catch {
+      /* malformed manifest - ignore */
+    }
+  }
+  if (files.some((f) => /(^|\/)pnpm-workspace\.ya?ml$/.test(f.path))) return 'pnpm run';
+  if (files.some((f) => /(^|\/)\.yarnrc(\.yml)?$/.test(f.path))) return 'yarn';
+  if (files.some((f) => /(^|\/)bunfig\.toml$/.test(f.path))) return 'bun run';
+  return 'npm run';
 }
 
 function collectDependencies(files: readonly IndexedFileSummary[]): Map<string, { file: string; version?: string }> {
@@ -336,14 +559,15 @@ function collectDependencies(files: readonly IndexedFileSummary[]): Map<string, 
   return out;
 }
 
+/**
+ * Lockfiles are never indexed (DEFAULT_IGNORE_PATTERNS drops them), so they
+ * cannot be used as evidence here: matching on `yarn.lock` used to guarantee a
+ * miss and left every JavaScript repository labelled "npm".
+ */
 function detectPackageManagers(files: readonly IndexedFileSummary[]): DetectedThing[] {
   const rules: { name: string; files: string[] }[] = [
-    { name: 'npm', files: ['package-lock.json'] },
-    { name: 'yarn', files: ['yarn.lock'] },
-    { name: 'pnpm', files: ['pnpm-lock.yaml', 'pnpm-workspace.yaml'] },
-    { name: 'bun', files: ['bun.lockb'] },
     { name: 'pip', files: ['requirements.txt'] },
-    { name: 'poetry', files: ['pyproject.toml', 'poetry.lock'] },
+    { name: 'poetry', files: ['pyproject.toml'] },
     { name: 'go modules', files: ['go.mod'] },
     { name: 'maven', files: ['pom.xml'] },
     { name: 'gradle', files: ['build.gradle', 'build.gradle.kts'] },
@@ -354,18 +578,38 @@ function detectPackageManagers(files: readonly IndexedFileSummary[]): DetectedTh
   ];
 
   const out: DetectedThing[] = [];
+
+  const pkg = files.find((f) => f.path === 'package.json') ?? files.find((f) => path.basename(f.path) === 'package.json');
+  if (pkg) {
+    const runner = nodeRunner(files);
+    const name = runner.split(' ')[0] ?? 'npm';
+    const declared = files.find((f) => /(^|\/)(pnpm-workspace\.ya?ml|\.yarnrc(\.yml)?|bunfig\.toml)$/.test(f.path));
+    let declaredField: string | undefined;
+    try {
+      declaredField = (JSON.parse(pkg.content) as { packageManager?: string }).packageManager;
+    } catch {
+      /* malformed manifest - ignore */
+    }
+    out.push({
+      name,
+      evidence: [
+        {
+          file: declaredField ? pkg.path : (declared?.path ?? pkg.path),
+          detail: declaredField
+            ? `package.json "packageManager": "${declaredField}"`
+            : declared
+              ? `${path.basename(declared.path)} present`
+              : 'package.json present, no other package manager declared',
+        },
+      ],
+    });
+  }
+
   for (const rule of rules) {
     const evidence: Evidence[] = [];
     for (const wanted of rule.files) {
       const hit = files.find((f) => f.path === wanted || f.path.endsWith(`/${wanted}`));
       if (hit) evidence.push({ file: hit.path });
-    }
-    // package.json without a lockfile still implies npm.
-    if (rule.name === 'npm' && !evidence.length) {
-      const pkg = files.find((f) => f.path === 'package.json');
-      if (pkg && !files.some((f) => /(yarn\.lock|pnpm-lock\.yaml|bun\.lockb)$/.test(f.path))) {
-        evidence.push({ file: pkg.path, detail: 'package.json present' });
-      }
     }
     if (evidence.length) out.push({ name: rule.name, evidence });
   }

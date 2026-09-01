@@ -184,6 +184,21 @@ export function buildRepositoryOverview(
     }
   }
 
+  // Build facts. Without these an "installation" or "deployment" answer has no
+  // choice but to invent commands.
+  if (stack.manifestFiles.length) lines.push(`Dependency manifests: ${stack.manifestFiles.slice(0, 12).join(', ')}`);
+  if (stack.runtimes.length) {
+    lines.push(`Pinned runtimes: ${stack.runtimes.map((r) => `${r.name} ${r.version} [${r.file}]`).join(', ')}`);
+  }
+  if (stack.scripts.length) {
+    lines.push(`Declared commands (${stack.scripts.length} total, showing up to 30):`);
+    for (const script of stack.scripts.slice(0, 30)) {
+      lines.push(`  - ${script.runner} ${script.name}${script.command ? ` -> ${script.command.slice(0, 140)}` : ''} [${script.file}]`);
+    }
+  }
+  if (stack.dockerFiles.length) lines.push(`Docker files: ${stack.dockerFiles.join(', ')}`);
+  if (stack.ciFiles.length) lines.push(`CI pipelines: ${stack.ciFiles.join(', ')}`);
+
   lines.push('Directory map (path | files | dominant role):');
   for (const dir of stack.directories.slice(0, maxDirs)) {
     lines.push(`  - ${dir.path} | ${dir.fileCount} files | ${dir.dominantRole}`);
