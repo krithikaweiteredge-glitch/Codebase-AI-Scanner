@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { getAIProvider } from '../ai/provider';
 import { getEmbeddingProvider } from '../ai/embeddings';
+import { detectSemgrep } from '../analyzers/sast';
 import { prisma } from '../db';
 import { env, githubOAuthConfigured } from '../env';
 import { queueMode, getQueue } from '../jobs/queue';
@@ -19,6 +20,12 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       database = `unavailable: ${(error as Error).message}`;
     }
 
+    // Every other subsystem reports whether it is actually usable; this one did
+    // not, so a semgrep that was configured but absent could only be diagnosed by
+    // reading a deploy log or an analysis run's skipped step. The probe result is
+    // cached for the life of the process, so repeated health checks cost nothing.
+    const semgrepVersion = env.SEMGREP_ENABLED ? await detectSemgrep({ binary: env.SEMGREP_PATH }) : null;
+
     const ai = getAIProvider();
     const embeddings = getEmbeddingProvider();
 
@@ -28,6 +35,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       pgvector,
       ai: { provider: ai.name, model: ai.model, generation: ai.supportsGeneration },
       embeddings: { provider: embeddings.name, model: embeddings.model, dimensions: embeddings.dimensions },
+      sast: { enabled: env.SEMGREP_ENABLED, binary: env.SEMGREP_PATH, version: semgrepVersion },
       github: { oauthConfigured: githubOAuthConfigured, apiUrl: env.GITHUB_API_URL },
       queue: { mode: queueMode(), pending: getQueue().size(), running: getQueue().running() },
       limits: {
