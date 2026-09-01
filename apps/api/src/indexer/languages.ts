@@ -240,6 +240,12 @@ export function detectRole(filePath: string, content: string): RoleHint {
 
   if (isTestFile(filePath)) return { role: 'test', reason: 'test path or filename convention' };
   if (/(^|\/)(migrations?|migrate)(\/|$)/.test(p)) return { role: 'migration', reason: 'migrations directory' };
+  // Served verbatim rather than imported. Without this every file under
+  // public/ fell through to the entry-point and config checks, so a directory
+  // of images and a manifest ended up labelled something it is not.
+  if (/(^|\/)(public|static|assets?|images?|img|fonts?|media)(\/|$)/.test(p)) {
+    return { role: 'asset', reason: 'static asset directory' };
+  }
   // "api" as a workspace name (apps/api, packages/api, services/api) says
   // nothing about the file's role - matching it labelled every backend file in
   // a monorepo "route" and collapsed the whole architecture view into one layer.
@@ -274,6 +280,12 @@ export function detectRole(filePath: string, content: string): RoleHint {
   if (/(^|\/)(auth|authentication|authorization|security)(\/|$)/.test(p)) {
     return { role: 'auth', reason: 'authentication directory' };
   }
+
+  // Stylesheets and markup are most of a frontend by file count. Leaving them
+  // 'unknown' meant a directory's label was decided by whichever one or two
+  // files happened to match a convention.
+  if (/\.(css|scss|sass|less|styl)$/.test(base)) return { role: 'style', reason: 'stylesheet' };
+  if (/\.(html?|hbs|ejs|pug|njk)$/.test(base)) return { role: 'markup', reason: 'markup template' };
 
   if (/@(Controller|RestController)\b/.test(content)) return { role: 'controller', reason: 'framework controller annotation' };
   if (/@(Injectable|Service)\b/.test(content)) return { role: 'service', reason: 'framework service annotation' };
