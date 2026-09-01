@@ -6,7 +6,14 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 RUN npm install --workspace @codebase-ai/api --include-workspace-root
 COPY apps/api apps/api
-RUN npm --workspace @codebase-ai/api run db:generate && npm --workspace @codebase-ai/api run build
+# npm workspaces hoist dependencies to the root, so apps/api/node_modules is
+# only created when a version conflict forces nesting - usually it does not
+# exist at all. The runtime stage copies it unconditionally, so make sure
+# there is something to copy. Until this image had a .dockerignore the path
+# happened to exist because `COPY apps/api apps/api` pulled in the host's
+# node_modules, which meant the image shipped modules resolved for whatever
+# platform the build ran on.
+RUN npm --workspace @codebase-ai/api run db:generate && npm --workspace @codebase-ai/api run build && mkdir -p /app/apps/api/node_modules
 
 FROM node:22-bookworm-slim
 WORKDIR /app/apps/api
