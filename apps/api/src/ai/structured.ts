@@ -67,6 +67,13 @@ export async function generateStructured<T>(options: StructuredOptions<T>): Prom
 
     if (result.text === LOCAL_NO_GENERATION) throw new AIGenerationUnavailable();
 
+    // A response cut off at the token ceiling is never valid JSON, and a repair
+    // attempt is sent the same ceiling with a longer conversation, so it is cut
+    // off again in the same place. Retrying only burns tokens; say what happened
+    // instead, because "could not be validated" points at the schema when the
+    // real problem is the budget.
+    const hitCeiling = options.maxTokens !== undefined && result.outputTokens >= options.maxTokens;
+
     const extracted = extractJson(result.text);
     if (extracted.ok) {
       const parsed = options.schema.safeParse(extracted.value);
@@ -76,7 +83,11 @@ export async function generateStructured<T>(options: StructuredOptions<T>): Prom
         .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
         .join('; ');
     } else {
-      lastError = extracted.error;
+      lastError = hitCeiling
+        ? `the response was cut off after ${result.outputTokens} tokens, the entire budget for this request. ` +
+          `Raise AI_MAX_OUTPUT_TOKENS (currently ${options.maxTokens}) or ask for a smaller report.`
+        : extracted.error;
+      if (hitCeiling) break;
     }
 
     messages.push({ role: 'assistant', content: result.text.slice(0, 4000) });
@@ -90,7 +101,8 @@ export async function generateStructured<T>(options: StructuredOptions<T>): Prom
   }
 
   throw invalidAiResponse(
-    `The AI provider returned output that could not be validated for task "${options.task}".`,
+    `The AI provider returned output that could not be validated for task "${options.task}": ` +
+      `${lastError.slice(0, 400) || 'no further detail'}.`,
     { lastError },
   );
 }
