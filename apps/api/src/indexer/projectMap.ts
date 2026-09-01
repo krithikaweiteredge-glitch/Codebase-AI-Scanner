@@ -729,6 +729,59 @@ function languageStats(files: readonly IndexedFileSummary[]): LanguageStat[] {
     .sort((a, b) => b.bytes - a.bytes);
 }
 
+/**
+ * Roles that describe scaffolding rather than what a directory is for.
+ * package.json and .eslintrc sit in every directory that holds anything, and a
+ * source root has exactly one entry point, so counting them equally let a
+ * single incidental file name a directory full of real code. They win only
+ * when there is nothing else.
+ */
+const WEAK_ROLES = new Set(['unknown', 'config', 'barrel', 'entrypoint', 'asset', 'style', 'markup']);
+
+/**
+ * Fixed order, so a tie is broken by what describes a directory best rather
+ * than by the order files happened to be indexed in - which made the label
+ * differ between two runs over the same repository.
+ */
+const ROLE_PRIORITY = [
+  'route',
+  'controller',
+  'model',
+  'component',
+  'service',
+  'repository',
+  'middleware',
+  'hook',
+  'worker',
+  'auth',
+  'migration',
+  'test',
+  'util',
+  'asset',
+  'style',
+  'markup',
+  'entrypoint',
+  'barrel',
+  'config',
+  'unknown',
+];
+
+/** The role that best describes a directory, most common first. */
+export function pickDominantRole(roles: Record<string, number>): string {
+  const rank = (role: string) => {
+    const index = ROLE_PRIORITY.indexOf(role);
+    return index === -1 ? ROLE_PRIORITY.length : index;
+  };
+  const best = (candidates: [string, number][]) =>
+    candidates.sort((a, b) => b[1] - a[1] || rank(a[0]) - rank(b[0]))[0]?.[0];
+  const entries = Object.entries(roles);
+  return (
+    best(entries.filter(([role]) => !WEAK_ROLES.has(role))) ??
+    best(entries.filter(([role]) => role !== 'unknown')) ??
+    'unknown'
+  );
+}
+
 function summariseDirectories(files: readonly IndexedFileSummary[]): DirectorySummary[] {
   const map = new Map<string, IndexedFileSummary[]>();
   for (const file of files) {
@@ -749,10 +802,7 @@ function summariseDirectories(files: readonly IndexedFileSummary[]): DirectorySu
       languages.add(displayLanguage(file.language));
       totalLines += file.lineCount;
     }
-    const dominantRole =
-      Object.entries(roles)
-        .filter(([role]) => role !== 'unknown')
-        .sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'unknown';
+    const dominantRole = pickDominantRole(roles);
 
     out.push({
       path: dir,

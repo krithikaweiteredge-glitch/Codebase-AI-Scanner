@@ -4,7 +4,7 @@ import { deterministicSection } from '../analyzers/documentation';
 import { detectRoutes, routeGroup } from '../indexer/apiRoutes';
 import { buildIgnoreMatcher } from '../indexer/ignore';
 import { detectRole } from '../indexer/languages';
-import { buildStackProfile, normaliseStackProfile, type IndexedFileSummary } from '../indexer/projectMap';
+import { buildStackProfile, normaliseStackProfile, pickDominantRole, type IndexedFileSummary } from '../indexer/projectMap';
 import { buildRepositoryOverview } from '../search/context';
 
 function file(path: string, content: string, extra: Partial<IndexedFileSummary> = {}): IndexedFileSummary {
@@ -230,5 +230,50 @@ describe('architecture fallback', () => {
     expect(narrative.summary).toContain('indexed files');
     // The schema rejects a flow shorter than two steps.
     expect(narrative.flows?.every((f) => f.steps.length >= 2)).toBe(true);
+  });
+});
+
+describe('directory role voting', () => {
+  it('does not let one incidental file name a directory full of code', () => {
+    // A React src/ is one index.js, one App.js and a pile of stylesheets. The
+    // old rule dropped "unknown" and took the maximum, so the single entry
+    // point named the whole directory.
+    expect(pickDominantRole({ entrypoint: 1, component: 1, style: 2, unknown: 2 })).toBe('component');
+  });
+
+  it('lets scaffolding name a directory only when there is nothing else', () => {
+    expect(pickDominantRole({ config: 3, markup: 1, unknown: 1 })).toBe('config');
+    expect(pickDominantRole({ entrypoint: 1, config: 1 })).toBe('entrypoint');
+    expect(pickDominantRole({ route: 1, config: 4 })).toBe('route');
+  });
+
+  it('breaks ties by what describes a directory, not by indexing order', () => {
+    const forwards = pickDominantRole({ component: 2, route: 2 });
+    const backwards = pickDominantRole({ route: 2, component: 2 });
+    expect(forwards).toBe(backwards);
+    expect(forwards).toBe('route');
+  });
+
+  it('falls back to unknown only when nothing at all matched', () => {
+    expect(pickDominantRole({ unknown: 4 })).toBe('unknown');
+    expect(pickDominantRole({})).toBe('unknown');
+  });
+});
+
+describe('static assets and stylesheets', () => {
+  it('treats a public directory as assets rather than an entry point', () => {
+    expect(detectRole('frontend/public/index.html', '<!doctype html>').role).toBe('asset');
+    expect(detectRole('frontend/public/manifest.json', '{}').role).toBe('asset');
+    expect(detectRole('web/static/logo.svg', '<svg/>').role).toBe('asset');
+  });
+
+  it('labels stylesheets and markup instead of leaving them unknown', () => {
+    expect(detectRole('frontend/src/App.css', '.app {}').role).toBe('style');
+    expect(detectRole('frontend/src/theme.scss', '$c: red;').role).toBe('style');
+    expect(detectRole('frontend/index.html', '<!doctype html>').role).toBe('markup');
+  });
+
+  it('still prefers a directory convention over the file extension', () => {
+    expect(detectRole('src/components/Button.css', '.b {}').role).toBe('component');
   });
 });
