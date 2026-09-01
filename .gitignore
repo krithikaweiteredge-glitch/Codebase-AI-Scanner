@@ -2,9 +2,17 @@ node_modules/
 dist/
 build/
 coverage/
+# Every dotenv variant, including the timestamped backups the setup script
+# leaves behind (.env.backup-1788167167). The narrower .env.local /
+# .env.*.local pair missed those, so a real environment file with live
+# credentials sat one `git add .` away from being committed. Mirrors the
+# exceptions in apps/api/src/indexer/ignore.ts: the committed templates
+# carry variable names and no values.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 
 # Key material. A GitHub App private key authenticates as the App against every
 # repository it is installed on, so a stray commit is a full compromise - and
