@@ -13,7 +13,17 @@ services:
     # Build from the repo root so npm workspaces resolve; `build:api` runs
     # `prisma generate` and compiles apps/api/src -> apps/api/dist.
     # Migrations run here because preDeployCommand needs a paid instance type.
-    buildCommand: npm ci && npm run db:deploy && npm run build:api
+    #
+    # semgrep is a Python program and this is the node runtime, so it is built
+    # into a venv under the project directory - the only path Render carries
+    # from build to runtime. SEMGREP_PATH below points at it. The install is
+    # allowed to fail: a pip hiccup should cost the dataflow step, not the
+    # deploy, and the skipped step records why. Keep the version in step with
+    # docker/api.Dockerfile.
+    buildCommand: >-
+      (python3 -m venv .venv && .venv/bin/pip install --no-cache-dir semgrep==1.175.0)
+      || echo 'semgrep unavailable, the dataflow step will skip';
+      npm ci && npm run db:deploy && npm run build:api
     startCommand: npm run start:api
     healthCheckPath: /api/health
     envVars:
@@ -70,8 +80,9 @@ services:
       # Dependency scanning against OSV.dev - public API, no key needed.
       - key: SCA_ENABLED
         value: "true"
-      # Semgrep is a Python program and this service uses Render's node
-      # runtime, so the binary is absent and the dataflow step skips itself.
-      # Flipped on automatically when running the Docker image instead.
+      # Dataflow analysis. The build above installs semgrep into .venv; if that
+      # ever fails the binary is absent and the step skips itself cleanly.
       - key: SEMGREP_ENABLED
-        value: "false"
+        value: "true"
+      - key: SEMGREP_PATH
+        value: /opt/render/project/src/.venv/bin/semgrep

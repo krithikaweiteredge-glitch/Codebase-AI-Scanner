@@ -38,3 +38,6 @@ vercel.json
 
 # Local state written by this tool's own runs.
 .codebase-ai
+
+# Python venv built on Render; the image installs semgrep its own way.
+.venv
