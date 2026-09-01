@@ -4,7 +4,7 @@ import { exportDocumentationMarkdown, generateDocumentation } from '../analyzers
 import { requireAuth } from '../auth/session';
 import { prisma } from '../db';
 import { badRequest, notFound } from '../errors';
-import { normaliseStackProfile, type StackProfile } from '../indexer/projectMap';
+import { normaliseStackProfile } from '../indexer/projectMap';
 import { loadRepository, resolveBranch } from '../lib/access';
 import { DOCUMENTATION_SECTIONS } from '../prompts/documentation';
 
