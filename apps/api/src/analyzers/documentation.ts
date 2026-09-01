@@ -3,7 +3,8 @@ import { aiEnabled } from '../ai/provider';
 import { AIGenerationUnavailable, generateStructured } from '../ai/structured';
 import { prisma } from '../db';
 import { env } from '../env';
-import type { StackProfile } from '../indexer/projectMap';
+import { routeGroup } from '../indexer/apiRoutes';
+import type { RunScript, StackProfile } from '../indexer/projectMap';
 import {
   DOCUMENTATION_SECTIONS,
   DOCUMENTATION_SYSTEM_PROMPT,
@@ -13,7 +14,7 @@ import {
   type DocumentationSectionKey,
 } from '../prompts/documentation';
 import { buildCodeContext, buildRepositoryOverview } from '../search/context';
-import { hybridSearch } from '../search/hybrid';
+import { hybridSearch, type RetrievedChunk } from '../search/hybrid';
 
 const SECTION_QUERIES: Record<DocumentationSectionKey, string> = {
   overview: 'main entry point application bootstrap what this service does',
@@ -55,11 +56,16 @@ export async function generateDocumentation(options: DocumentationOptions): Prom
   const overview = buildRepositoryOverview(options.stack, { maxRoutes: 60, maxDirectories: 40 });
   const out: GeneratedSection[] = [];
 
+  // Once the provider is exhausted (quota, no key, hard failure) every further
+  // call fails the same way; keep writing the deterministic sections instead of
+  // burning a request per section.
+  let aiAvailable = aiEnabled();
+
   for (const [index, section] of sections.entries()) {
     const deterministic = deterministicSection(section, options.stack, options.repositoryName);
     let result: GeneratedSection = deterministic;
 
-    if (aiEnabled()) {
+    if (aiAvailable) {
       try {
         const search = await hybridSearch({
           repositoryId: options.repositoryId,
@@ -67,7 +73,11 @@ export async function generateDocumentation(options: DocumentationOptions): Prom
           query: SECTION_QUERIES[section],
           limit: 10,
         });
-        const context = buildCodeContext(search.results, Math.floor(env.CONTEXT_TOKEN_BUDGET * 0.7));
+        const pinned = await pinnedChunks(options.branchId, section, options.stack);
+        const context = buildCodeContext(
+          [...pinned, ...search.results.filter((r) => !pinned.some((p) => p.filePath === r.filePath))],
+          Math.floor(env.CONTEXT_TOKEN_BUDGET * 0.7),
+        );
 
         const { data } = await generateStructured({
           system: DOCUMENTATION_SYSTEM_PROMPT,
@@ -92,9 +102,16 @@ export async function generateDocumentation(options: DocumentationOptions): Prom
           generatedBy: 'ai',
         };
       } catch (error) {
-        if (error instanceof AIGenerationUnavailable) {
-          // fall through to the deterministic version for every remaining section
-        }
+        // The deterministic section is already the fallback; say why the richer
+        // one is missing rather than silently shipping the stub.
+        // Provider errors carry a whole JSON body; this lands in the rendered
+        // documentation, so keep it to one readable line.
+        const reason = truncate(error instanceof Error ? error.message : String(error), 200);
+        result = {
+          ...deterministic,
+          contentMd: `${deterministic.contentMd}\n\n> The AI narrative for this section could not be generated: ${reason}`,
+        };
+        if (error instanceof AIGenerationUnavailable) aiAvailable = false;
       }
     }
 
@@ -209,15 +226,84 @@ export function deterministicSection(
 
     case 'installation': {
       lines.push('## Installation', '');
+
+      if (!stack.manifestFiles.length && !stack.packageManagers.length) {
+        lines.push('No dependency manifest was detected in the indexed files, so no install command can be quoted.', '');
+        break;
+      }
+
+      lines.push('### Prerequisites', '');
+      if (stack.runtimes.length) {
+        lines.push('| Runtime | Required version | Pinned in |', '| --- | --- | --- |');
+        for (const runtime of stack.runtimes) {
+          lines.push(`| ${runtime.name} | \`${runtime.version}\` | \`${runtime.file}\` |`);
+          sources.add(runtime.file);
+        }
+      } else {
+        lines.push('The manifests do not pin a runtime version.');
+      }
       if (stack.packageManagers.length) {
-        lines.push(`Package manager(s) detected: ${stack.packageManagers.map((p) => `**${p.name}**`).join(', ')}`, '');
+        lines.push(
+          '',
+          `Package manager(s): ${stack.packageManagers.map((p) => `**${p.name}**`).join(', ')} — ${stack.packageManagers
+            .map((p) => `\`${p.evidence[0]?.file ?? 'n/a'}\``)
+            .join(', ')}`,
+        );
         for (const manager of stack.packageManagers) {
           for (const evidence of manager.evidence) sources.add(evidence.file);
         }
-      } else {
-        lines.push('No package manifest was detected in the indexed files.', '');
       }
-      if (stack.hasDocker) lines.push('A Docker configuration is present, so the stack can also be started with Docker Compose.', '');
+      if (stack.databases.length) {
+        lines.push('', `Datastores the code connects to: ${stack.databases.map((d) => `**${d.name}**`).join(', ')}.`);
+      }
+      lines.push('');
+
+      const install = installCommands(stack);
+      if (install.length) {
+        lines.push('### Install dependencies', '');
+        lines.push('```bash');
+        for (const command of install) lines.push(command);
+        lines.push('```', '');
+      }
+
+      const envExample = stack.configFiles.find((f) => /(^|\/)\.env\.(example|sample|template)$/.test(f));
+      if (envExample) {
+        lines.push('### Configure the environment', '');
+        lines.push(
+          `The repository ships \`${envExample}\`. Copy it and fill in the values described under Environment Variables:`,
+          '',
+        );
+        lines.push('```bash', `cp ${envExample} ${envExample.replace(/\.(example|sample|template)$/, '')}`, '```', '');
+        sources.add(envExample);
+      }
+
+      const scripts = notableScripts(stack);
+      if (scripts.length) {
+        lines.push('### Declared commands', '');
+        lines.push('| Command | Runs | Declared in |', '| --- | --- | --- |');
+        for (const script of scripts) {
+          lines.push(
+            `| \`${script.runner} ${script.name}\` | ${script.command ? `\`${truncate(script.command, 90)}\`` : '—'} | \`${script.file}\` |`,
+          );
+          sources.add(script.file);
+        }
+        lines.push('');
+      } else if (stack.manifestFiles.length) {
+        lines.push('The manifests declare no build or run scripts.', '');
+      }
+
+      if (stack.hasDocker) {
+        lines.push('### Docker', '');
+        lines.push(
+          `Docker configuration is present (${stack.dockerFiles.map((f) => `\`${f}\``).join(', ')}), so the stack can also be started with Docker.`,
+          '',
+        );
+        const compose = stack.dockerFiles.find((f) => /docker-compose/i.test(f));
+        if (compose) {
+          lines.push('```bash', `docker compose -f ${compose} up --build`, '```', '');
+        }
+        for (const file of stack.dockerFiles) sources.add(file);
+      }
       break;
     }
 
@@ -309,7 +395,7 @@ export function deterministicSection(
       lines.push('## Important Workflows', '');
       const grouped = new Map<string, typeof stack.routes>();
       for (const route of stack.routes) {
-        const key = route.path.split('/').filter(Boolean)[0] ?? 'root';
+        const key = routeGroup(route.path);
         const list = grouped.get(key) ?? [];
         list.push(route);
         grouped.set(key, list);
@@ -344,9 +430,42 @@ export function deterministicSection(
 
     case 'deployment': {
       lines.push('## Deployment', '');
-      lines.push(`- Docker configuration present: ${stack.hasDocker ? 'yes' : 'no'}`);
-      lines.push(`- CI configuration present: ${stack.hasCI ? 'yes' : 'no'}`);
-      lines.push(`- Monorepo layout: ${stack.monorepo ? 'yes' : 'no'}`);
+      lines.push(`- Monorepo layout: ${stack.monorepo ? 'yes' : 'no'}`, '');
+
+      if (stack.dockerFiles.length) {
+        lines.push('### Container images', '');
+        for (const file of stack.dockerFiles) {
+          lines.push(`- \`${file}\``);
+          sources.add(file);
+        }
+        lines.push('');
+      } else {
+        lines.push('No Dockerfile or compose file was detected.', '');
+      }
+
+      if (stack.ciFiles.length) {
+        lines.push('### CI pipelines', '');
+        for (const file of stack.ciFiles) {
+          lines.push(`- \`${file}\``);
+          sources.add(file);
+        }
+        lines.push('');
+      } else {
+        lines.push('No CI pipeline configuration was detected.', '');
+      }
+
+      const buildScripts = stack.scripts.filter((s) => /^(build|compile|package|deploy|release|start)/i.test(s.name));
+      if (buildScripts.length) {
+        lines.push('### Build and release commands', '');
+        lines.push('| Command | Runs | Declared in |', '| --- | --- | --- |');
+        for (const script of buildScripts.slice(0, 20)) {
+          lines.push(
+            `| \`${script.runner} ${script.name}\` | ${script.command ? `\`${truncate(script.command, 90)}\`` : '—'} | \`${script.file}\` |`,
+          );
+          sources.add(script.file);
+        }
+        lines.push('');
+      }
       break;
     }
 
@@ -359,6 +478,15 @@ export function deterministicSection(
         }
       } else {
         lines.push('No test framework was detected in the indexed files.');
+      }
+
+      const testScripts = stack.scripts.filter((s) => /(test|spec|e2e|coverage|lint|typecheck)/i.test(s.name));
+      if (testScripts.length) {
+        lines.push('', '### How to run the tests', '');
+        lines.push('```bash');
+        for (const script of testScripts.slice(0, 12)) lines.push(`${script.runner} ${script.name}`);
+        lines.push('```');
+        for (const script of testScripts) sources.add(script.file);
       }
       break;
     }
@@ -384,12 +512,133 @@ export function deterministicSection(
   };
 }
 
+/**
+ * Files a section cannot be written without. Embedding search ranks a JSON
+ * manifest poorly against a prose query, so "installation" used to be written
+ * without ever seeing package.json - the model had nothing to quote and fell
+ * back to generic advice. These are force-fed into the context instead.
+ */
+function pinnedPaths(section: DocumentationSectionKey, stack: StackProfile): string[] {
+  switch (section) {
+    case 'overview':
+      return stack.manifestFiles.slice(0, 6);
+    case 'installation':
+      return [...stack.manifestFiles, ...stack.dockerFiles].slice(0, 12);
+    case 'deployment':
+      return [...stack.dockerFiles, ...stack.ciFiles, ...stack.manifestFiles].slice(0, 12);
+    case 'testing':
+      return [...stack.manifestFiles, ...stack.configFiles.filter((f) => /(vitest|jest|playwright|cypress|pytest|karma)/i.test(f))].slice(0, 10);
+    case 'configuration':
+      return stack.configFiles.slice(0, 12);
+    case 'environment-variables':
+      return stack.configFiles.filter((f) => /(^|\/)\.env\./.test(f)).slice(0, 4);
+    case 'database':
+      return stack.databases.flatMap((d) => d.evidence.map((e) => e.file)).slice(0, 8);
+    default:
+      return [];
+  }
+}
+
+/** Whole-file context for the paths a section is anchored to. */
+async function pinnedChunks(
+  branchId: string,
+  section: DocumentationSectionKey,
+  stack: StackProfile,
+): Promise<RetrievedChunk[]> {
+  const paths = [...new Set(pinnedPaths(section, stack))];
+  const wantsReadme = section === 'overview' || section === 'installation';
+  if (!paths.length && !wantsReadme) return [];
+
+  const files = await prisma.repositoryFile.findMany({
+    where: {
+      branchId,
+      OR: [...(paths.length ? [{ path: { in: paths } }] : []), ...(wantsReadme ? [{ path: { startsWith: 'README' } }] : [])],
+    },
+    select: { id: true, path: true, content: true, language: true, role: true },
+    take: 16,
+  });
+
+  return files.map((file) => {
+    const lines = (file.content ?? '').split('\n').slice(0, 200);
+    return {
+      id: `pinned:${file.id}`,
+      fileId: file.id,
+      filePath: file.path,
+      language: file.language,
+      role: file.role,
+      symbolName: null,
+      symbolType: 'file',
+      startLine: 1,
+      endLine: lines.length,
+      content: lines.join('\n'),
+      score: 1,
+      fusedScore: 1,
+      matchedBy: ['section-manifest'],
+      ranks: {},
+    } satisfies RetrievedChunk;
+  });
+}
+
+function truncate(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * Install commands implied by the manifests that are actually present. Each one
+ * is tied to a manifest in the repository - nothing is offered speculatively.
+ */
+function installCommands(stack: StackProfile): string[] {
+  const out: string[] = [];
+  const has = (name: string) => stack.manifestFiles.some((f) => f.toLowerCase().endsWith(name));
+  const managers = new Set(stack.packageManagers.map((p) => p.name));
+
+  if (has('package.json')) {
+    if (managers.has('pnpm')) out.push('pnpm install');
+    else if (managers.has('yarn')) out.push('yarn install');
+    else if (managers.has('bun')) out.push('bun install');
+    else out.push('npm install');
+  }
+  if (has('requirements.txt')) out.push('pip install -r requirements.txt');
+  if (has('pyproject.toml')) out.push(managers.has('poetry') ? 'poetry install' : 'pip install -e .');
+  if (has('pipfile')) out.push('pipenv install');
+  if (has('go.mod')) out.push('go mod download');
+  if (has('cargo.toml')) out.push('cargo build');
+  if (has('gemfile')) out.push('bundle install');
+  if (has('composer.json')) out.push('composer install');
+  if (has('pom.xml')) out.push('mvn install');
+  if (has('build.gradle') || has('build.gradle.kts')) out.push('./gradlew build');
+
+  return [...new Set(out)];
+}
+
+/**
+ * Scripts a newcomer needs first: setup, build, run and test, then whatever
+ * else the manifests declare, capped so the table stays readable.
+ */
+function notableScripts(stack: StackProfile): RunScript[] {
+  const priority = /^(postinstall|prepare|setup|bootstrap|migrate|db:[\w-]+|seed|build|start|serve|dev|test|lint|typecheck)/i;
+  // In a monorepo the same script name exists in every workspace; the root
+  // manifest is the one a newcomer can actually run from a fresh clone.
+  const depth = (s: RunScript) => s.file.split('/').length;
+  const ranked = [...stack.scripts].sort((a, b) => {
+    const score = (s: RunScript) => (priority.test(s.name) ? 0 : 1);
+    return score(a) - score(b) || depth(a) - depth(b);
+  });
+  return ranked.slice(0, 25);
+}
+
 /** Concatenate stored sections into a single downloadable markdown document. */
 export async function exportDocumentationMarkdown(repositoryId: string, repositoryName: string): Promise<string> {
   const docs = await prisma.documentation.findMany({
     where: { repositoryId },
     orderBy: { position: 'asc' },
   });
+
+  // An empty string is the caller's signal that there is nothing to download.
+  // Emitting the header regardless made that check unreachable and shipped a
+  // document with a title and no content.
+  if (!docs.length) return '';
 
   const parts = [`# ${repositoryName} — Technical Documentation`, '', `_Generated ${new Date().toISOString()}_`, ''];
   parts.push('## Contents', '');

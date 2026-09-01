@@ -3,7 +3,7 @@ import { aiEnabled } from '../ai/provider';
 import { AIGenerationUnavailable, generateStructured } from '../ai/structured';
 import { prisma } from '../db';
 import { env } from '../env';
-import type { StackProfile } from '../indexer/projectMap';
+import { normaliseStackProfile, type StackProfile } from '../indexer/projectMap';
 import {
   buildChatPrompt,
   buildExtractiveAnswer,
@@ -69,7 +69,7 @@ export async function askCodebase(options: AskOptions): Promise<AskResult> {
     where: { repositoryId_kind: { repositoryId: options.repositoryId, kind: 'stack' } },
   });
   const overview = stackInsight
-    ? buildRepositoryOverview(stackInsight.data as unknown as StackProfile, { maxRoutes: 30, maxDirectories: 20 })
+    ? buildRepositoryOverview(normaliseStackProfile(stackInsight.data), { maxRoutes: 30, maxDirectories: 20 })
     : 'No project map is available for this repository yet.';
 
   // Direct symbol hits give the model exact identifier locations.

@@ -4,7 +4,7 @@ import { exportDocumentationMarkdown, generateDocumentation } from '../analyzers
 import { requireAuth } from '../auth/session';
 import { prisma } from '../db';
 import { badRequest, notFound } from '../errors';
-import type { StackProfile } from '../indexer/projectMap';
+import { normaliseStackProfile, type StackProfile } from '../indexer/projectMap';
 import { loadRepository, resolveBranch } from '../lib/access';
 import { DOCUMENTATION_SECTIONS } from '../prompts/documentation';
 
@@ -53,7 +53,7 @@ export async function documentationRoutes(app: FastifyInstance): Promise<void> {
       repositoryId: id,
       branchId: branch.id,
       repositoryName: repository.fullName,
-      stack: insight.data as unknown as StackProfile,
+      stack: normaliseStackProfile(insight.data),
       ...(body.sections ? { sections: body.sections } : {}),
     });
 

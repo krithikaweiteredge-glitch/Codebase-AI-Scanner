@@ -200,7 +200,7 @@ export function ArchitecturePage() {
               <Card>
                 <EmptyState
                   title="No narrative available"
-                  description="Layer descriptions and flows require a configured AI provider. The diagram and dependency graph are available without one."
+                  description="No directories or endpoints were found to describe. Re-run the analysis, or check the Dependency graph tab for the raw import data."
                 />
               </Card>
             ) : null}

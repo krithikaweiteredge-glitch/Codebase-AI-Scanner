@@ -3,6 +3,7 @@ import { aiEnabled } from '../ai/provider';
 import { AIGenerationUnavailable, generateStructured } from '../ai/structured';
 import { prisma } from '../db';
 import { env } from '../env';
+import { routeGroup } from '../indexer/apiRoutes';
 import type { StackProfile } from '../indexer/projectMap';
 import {
   ARCHITECTURE_SYSTEM_PROMPT,
@@ -145,25 +146,35 @@ function findCycles(edges: { from: string; to: string }[], pathById: Map<string,
   return cycles;
 }
 
+const dirOf = (filePath: string) => (filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '/');
+
 /** Mermaid diagram derived purely from directory roles and real import edges. */
 export function deterministicMermaid(stack: StackProfile, graph: DependencyGraph): string {
-  const byDirectory = new Map<string, { role: string; files: number }>();
+  const roleByDirectory = new Map(stack.directories.map((d) => [d.path, d.dominantRole]));
+  const byDirectory = new Map<string, { roles: Map<string, number>; files: number }>();
   for (const node of graph.nodes) {
-    const dir = node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : '/';
-    const entry = byDirectory.get(dir) ?? { role: node.role ?? 'unknown', files: 0 };
+    const dir = dirOf(node.path);
+    const entry = byDirectory.get(dir) ?? { roles: new Map<string, number>(), files: 0 };
     entry.files++;
+    const role = node.role ?? 'unknown';
+    entry.roles.set(role, (entry.roles.get(role) ?? 0) + 1);
     byDirectory.set(dir, entry);
   }
 
-  const significant = [...byDirectory.entries()]
-    .filter(([, value]) => value.files >= 2)
-    .sort((a, b) => b[1].files - a[1].files)
-    .slice(0, 18);
+  const ranked = [...byDirectory.entries()].sort((a, b) => b[1].files - a[1].files);
+  // A flat or small repository has no directory with two files; keeping the
+  // >= 2 filter there produced a diagram with no nodes at all, which mermaid
+  // rejects outright and the UI renders as a parse error.
+  const multiFile = ranked.filter(([, value]) => value.files >= 2);
+  const significant = (multiFile.length >= 2 ? multiFile : ranked).slice(0, 18);
+
+  if (!significant.length) {
+    return ['flowchart TD', '  EMPTY["No files were indexed for this branch"]'].join('\n');
+  }
 
   const idFor = new Map<string, string>();
   significant.forEach(([dir], index) => idFor.set(dir, `D${index}`));
 
-  const dirOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '/');
   const edgeCounts = new Map<string, number>();
   const pathById = new Map(graph.nodes.map((n) => [n.id, n.path]));
 
@@ -178,22 +189,135 @@ export function deterministicMermaid(stack: StackProfile, graph: DependencyGraph
 
   const lines = ['flowchart TD'];
   for (const [dir, value] of significant) {
-    lines.push(`  ${idFor.get(dir)}["${escapeMermaid(dir)}<br/>${value.files} files · ${value.role}"]`);
+    const role = roleByDirectory.get(dir) ?? [...value.roles.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'unknown';
+    lines.push(`  ${idFor.get(dir)}["${escapeMermaid(dir)}<br/>${value.files} files · ${escapeMermaid(role)}"]`);
   }
   for (const [key, count] of [...edgeCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40)) {
     const [from, to] = key.split('->');
     lines.push(`  ${from} -->|${count}| ${to}`);
   }
+
+  // Externals are only worth drawing when they attach to a module that is on
+  // the diagram; a floating box tells the reader nothing.
+  const usedIds = new Set<string>();
+  const attach = (name: string, prefix: string, shape: (label: string) => string, evidence: { file: string }[]) => {
+    const callers = new Set<string>();
+    for (const item of evidence) {
+      const id = idFor.get(dirOf(item.file));
+      if (id) callers.add(id);
+    }
+    if (!callers.size) return;
+    let id = `${prefix}${name.replace(/\W/g, '') || 'X'}`;
+    while (usedIds.has(id)) id += '_';
+    usedIds.add(id);
+    lines.push(`  ${id}${shape(escapeMermaid(name))}`);
+    for (const caller of [...callers].slice(0, 4)) lines.push(`  ${caller} --> ${id}`);
+  };
+
   for (const service of stack.externalServices.slice(0, 6)) {
-    const id = `EXT${service.name.replace(/\W/g, '')}`;
-    lines.push(`  ${id}(["${escapeMermaid(service.name)}"])`);
+    attach(service.name, 'EXT', (label) => `(["${label}"])`, service.evidence);
   }
   for (const db of stack.databases.slice(0, 4)) {
-    const id = `DB${db.name.replace(/\W/g, '')}`;
-    lines.push(`  ${id}[("${escapeMermaid(db.name)}")]`);
+    attach(db.name, 'DB', (label) => `[("${label}")]`, db.evidence);
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Layers, directory purposes and request flows derived from the index alone, so
+ * the Layers & flows view is populated even with no AI provider configured.
+ */
+export function deterministicNarrative(
+  stack: StackProfile,
+  graph: DependencyGraph,
+): Pick<ArchitectureReport, 'summary' | 'layers' | 'directoryPurposes' | 'flows'> {
+  const byRole = new Map<string, typeof stack.directories>();
+  for (const dir of stack.directories) {
+    // Directories no convention matches are their own module rather than being
+    // swept into one "unknown" layer, which described nothing.
+    const key = dir.dominantRole === 'unknown' ? `module: ${dir.path.split('/').pop() || dir.path}` : dir.dominantRole;
+    const list = byRole.get(key) ?? [];
+    list.push(dir);
+    byRole.set(key, list);
+  }
+
+  const layers = [...byRole.entries()]
+    .sort((a, b) => b[1].reduce((n, d) => n + d.fileCount, 0) - a[1].reduce((n, d) => n + d.fileCount, 0))
+    .slice(0, 12)
+    .map(([role, dirs]) => ({
+      name: role,
+      purpose: role.startsWith('module: ')
+        ? `${dirs.reduce((n, d) => n + d.fileCount, 0)} files in ${dirs.map((d) => d.path).join(', ')}; no layering convention matched, so this is grouped by module name.`
+        : `${dirs.reduce((n, d) => n + d.fileCount, 0)} files across ${dirs.length} ${
+            dirs.length === 1 ? 'directory' : 'directories'
+          } classified as "${role}" by path convention and file contents.`,
+      directories: dirs.slice(0, 12).map((d) => d.path),
+      keyFiles: dirs.flatMap((d) => d.importantFiles).slice(0, 12),
+    }));
+
+  const directoryPurposes = stack.directories.slice(0, 40).map((dir) => ({
+    path: dir.path,
+    purpose: `${dir.fileCount} files (${dir.totalLines} lines), mostly ${dir.dominantRole}${
+      dir.languages.length ? `, written in ${dir.languages.slice(0, 3).join(', ')}` : ''
+    }.`,
+    responsibilities: Object.entries(dir.roles)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([role, count]) => `${count} ${role} file${count === 1 ? '' : 's'}`),
+    importantFiles: dir.importantFiles.slice(0, 8),
+  }));
+
+  // One flow per route group: entry point -> handler file -> what it imports.
+  const pathById = new Map(graph.nodes.map((n) => [n.id, n.path]));
+  const importsOf = new Map<string, string[]>();
+  for (const edge of graph.edges) {
+    const from = pathById.get(edge.from);
+    const to = pathById.get(edge.to);
+    if (!from || !to) continue;
+    const list = importsOf.get(from) ?? [];
+    if (list.length < 3) list.push(to);
+    importsOf.set(from, list);
+  }
+
+  const grouped = new Map<string, (typeof stack.routes)[number][]>();
+  for (const route of stack.routes) {
+    const key = routeGroup(route.path);
+    const list = grouped.get(key) ?? [];
+    list.push(route);
+    grouped.set(key, list);
+  }
+
+  const entry = stack.entryPoints[0];
+  const flows = [...grouped.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, 8)
+    .map(([group, routes]) => {
+      const route = routes[0]!;
+      const steps: ArchitectureReport['flows'][number]['steps'] = [];
+      if (entry) steps.push({ label: `Process starts at ${entry.file}`, filePath: entry.file, startLine: entry.line ?? null });
+      steps.push({ label: `${route.method} ${route.path} is declared`, filePath: route.file, startLine: route.line });
+      if (route.handler) steps.push({ label: `Handled by ${route.handler}()`, filePath: route.file, startLine: route.line });
+      for (const target of importsOf.get(route.file) ?? []) {
+        steps.push({ label: `Delegates to ${target}`, filePath: target, startLine: null });
+      }
+      return { name: `/${group} (${routes.length} endpoint${routes.length === 1 ? '' : 's'})`, steps };
+    })
+    // The schema requires at least two steps; a route with nothing around it is
+    // not a flow worth drawing.
+    .filter((flow) => flow.steps.length >= 2);
+
+  const summary = [
+    `${stack.projectTypes.join(', ') || 'Unclassified project'} with ${graph.nodes.length} indexed files and ${graph.edges.length} internal imports.`,
+    layers.length ? `Code is organised into ${layers.length} role groups, the largest being "${layers[0]!.name}".` : '',
+    stack.routes.length ? `${stack.routes.length} HTTP endpoints were detected across ${grouped.size} route groups.` : 'No HTTP endpoints were detected.',
+    graph.cycles.length ? `${graph.cycles.length} import cycles are present.` : 'No import cycles were found.',
+    'This description is derived from the index; configure an AI provider for a written narrative.',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return { summary, layers, directoryPurposes, flows };
 }
 
 function escapeMermaid(text: string): string {
@@ -230,6 +354,7 @@ export async function generateArchitecture(params: {
   };
 
   const base: ArchitectureInsight = {
+    ...deterministicNarrative(params.stack, graph),
     mermaid: fallbackMermaid,
     generatedBy: 'deterministic',
     graphSummary,
@@ -299,8 +424,13 @@ export async function generateArchitecture(params: {
       maxTokens: env.AI_MAX_OUTPUT_TOKENS,
     });
 
+    // The schema permits empty arrays, so a thin model response must not wipe
+    // out the narrative the index can supply on its own.
     const insight: ArchitectureInsight = {
       ...data,
+      layers: data.layers.length ? data.layers : base.layers,
+      directoryPurposes: data.directoryPurposes.length ? data.directoryPurposes : base.directoryPurposes,
+      flows: data.flows.length ? data.flows : base.flows,
       mermaid: sanitiseMermaid(data.mermaid) || fallbackMermaid,
       generatedBy: 'ai',
       graphSummary,
@@ -309,7 +439,7 @@ export async function generateArchitecture(params: {
     return insight;
   } catch (error) {
     if (!(error instanceof AIGenerationUnavailable)) {
-      base.summary = `Architecture narrative unavailable: ${(error as Error).message}. The diagram below is derived directly from the dependency graph.`;
+      base.summary = `${base.summary ?? ''}\n\nAI narrative unavailable: ${(error as Error).message}. Everything shown here is derived directly from the dependency graph.`.trim();
     }
     await saveArchitecture(params.repositoryId, base);
     return base;

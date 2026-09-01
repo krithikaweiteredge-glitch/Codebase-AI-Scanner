@@ -7,7 +7,7 @@ import { env } from '../env';
 import { badRequest, conflict, notFound } from '../errors';
 import { githubClientForUser } from '../github/service';
 import { DEFAULT_IGNORE_PATTERNS } from '../indexer/ignore';
-import type { StackProfile } from '../indexer/projectMap';
+import { normaliseStackProfile, type StackProfile } from '../indexer/projectMap';
 import { enqueueAnalysis } from '../jobs/analysisJob';
 import { loadRepository, resolveBranch } from '../lib/access';
 import { grepFiles, findSymbols, hybridSearch } from '../search/hybrid';
@@ -437,7 +437,7 @@ export async function repositoryRoutes(app: FastifyInstance): Promise<void> {
       bucket.total = (bucket.total ?? 0) + row._count._all;
     }
 
-    const stackData = stack?.data as unknown as StackProfile | undefined;
+    const stackData = stack ? normaliseStackProfile(stack.data) : undefined;
 
     return {
       repository: serialiseRepository(repository),

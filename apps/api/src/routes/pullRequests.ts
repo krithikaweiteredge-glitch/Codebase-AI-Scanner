@@ -5,7 +5,7 @@ import { requireAuth } from '../auth/session';
 import { prisma } from '../db';
 import { badRequest, notFound } from '../errors';
 import { githubClientForRepository } from '../github/service';
-import type { StackProfile } from '../indexer/projectMap';
+import { normaliseStackProfile, type StackProfile } from '../indexer/projectMap';
 import { loadRepository, resolveBranch } from '../lib/access';
 import { AI_DISCLAIMER } from '../prompts/shared';
 
@@ -18,7 +18,7 @@ async function loadStack(repositoryId: string): Promise<StackProfile> {
   if (!insight) {
     throw badRequest('Index this repository before reviewing pull requests - the review uses the indexed project map.');
   }
-  return insight.data as unknown as StackProfile;
+  return normaliseStackProfile(insight.data);
 }
 
 export async function pullRequestRoutes(app: FastifyInstance): Promise<void> {

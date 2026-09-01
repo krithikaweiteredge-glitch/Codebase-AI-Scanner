@@ -240,7 +240,14 @@ export function detectRole(filePath: string, content: string): RoleHint {
 
   if (isTestFile(filePath)) return { role: 'test', reason: 'test path or filename convention' };
   if (/(^|\/)(migrations?|migrate)(\/|$)/.test(p)) return { role: 'migration', reason: 'migrations directory' };
-  if (/(^|\/)(routes?|router|routers|endpoints|api|controllers?|handlers?)(\/|$)/.test(p)) {
+  // "api" as a workspace name (apps/api, packages/api, services/api) says
+  // nothing about the file's role - matching it labelled every backend file in
+  // a monorepo "route" and collapsed the whole architecture view into one layer.
+  const apiIsWorkspaceName = /(^|\/)(apps|packages|services|libs|modules|cmd)\/api(\/|$)/.test(p);
+  if (
+    /(^|\/)(routes?|router|routers|endpoints|controllers?|handlers?)(\/|$)/.test(p) ||
+    (!apiIsWorkspaceName && /(^|\/)api(\/|$)/.test(p))
+  ) {
     return { role: p.includes('controller') ? 'controller' : 'route', reason: 'routing/controller directory' };
   }
   if (/(^|\/)(middlewares?|interceptors?|guards?|filters?)(\/|$)/.test(p)) {
@@ -277,8 +284,20 @@ export function detectRole(filePath: string, content: string): RoleHint {
     return { role: 'component', reason: 'renders JSX' };
   }
 
+  // A conventional filename alone is not enough: most `index.ts` files are
+  // re-export barrels, and labelling them entry points made whole directories
+  // look like process entry points in the architecture view.
   const entry = ['main', 'index', 'app', 'server', 'program'].includes(base.split('.')[0] ?? '');
-  if (entry) return { role: 'entrypoint', reason: 'conventional entry-point filename' };
+  if (entry) {
+    const starts =
+      /\.(listen|start|run)\s*\(|createServer\s*\(|createRoot\s*\(|ReactDOM\.render\s*\(|app\.mount\s*\(|if\s+__name__\s*==|func\s+main\s*\(|static\s+void\s+[Mm]ain\s*\(/.test(
+        content,
+      );
+    if (starts) return { role: 'entrypoint', reason: 'conventional entry-point filename that starts the process' };
+    if (/^\s*(import|export)\b/m.test(content) && !/\bfunction\b|\bclass\b/.test(content)) {
+      return { role: 'barrel', reason: 're-export barrel' };
+    }
+  }
 
   return { role: 'unknown', reason: 'no convention matched' };
 }
