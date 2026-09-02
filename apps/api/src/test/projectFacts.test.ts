@@ -296,4 +296,29 @@ describe('architecture schema tolerance', () => {
     });
     expect(parsed.flows[0]!.steps).toHaveLength(1);
   });
+
+  it('tolerates missing responsibilities and importantFiles in directoryPurposes', () => {
+    const parsed = architectureSchema.parse({
+      ...base,
+      directoryPurposes: [
+        { path: 'frontend/src/components', purpose: 'UI presentation components' },
+        { path: 'backend/routes', purpose: 'API route handlers' },
+      ],
+    });
+    expect(parsed.directoryPurposes).toHaveLength(2);
+    expect(parsed.directoryPurposes[0]!.responsibilities).toEqual([]);
+    expect(parsed.directoryPurposes[0]!.importantFiles).toEqual([]);
+  });
+
+  it('tolerates missing directories and keyFiles in layers', () => {
+    const parsed = architectureSchema.parse({
+      ...base,
+      layers: [
+        { name: 'Presentation', purpose: 'Frontend React UI components' },
+      ],
+    });
+    expect(parsed.layers).toHaveLength(1);
+    expect(parsed.layers[0]!.directories).toEqual([]);
+    expect(parsed.layers[0]!.keyFiles).toEqual([]);
+  });
 });

@@ -57,21 +57,23 @@ export const architectureSchema: z.ZodType<ArchitectureReport> = z.object({
       z.object({
         name: z.string().min(1).max(80),
         purpose: z.string().min(5).max(600),
-        directories: z.array(z.string().max(200)).max(12),
-        keyFiles: z.array(z.string().max(200)).max(12),
+        directories: z.array(z.string().max(200)).max(12).default([]),
+        keyFiles: z.array(z.string().max(200)).max(12).default([]),
       }),
     )
-    .max(12),
+    .max(12)
+    .default([]),
   directoryPurposes: z
     .array(
       z.object({
         path: z.string().min(1).max(200),
         purpose: z.string().min(5).max(600),
-        responsibilities: z.array(z.string().max(200)).max(8),
-        importantFiles: z.array(z.string().max(200)).max(8),
+        responsibilities: z.array(z.string().max(200)).max(8).default([]),
+        importantFiles: z.array(z.string().max(200)).max(8).default([]),
       }),
     )
-    .max(40),
+    .max(40)
+    .default([]),
   flows: z
     .array(
       z.object({
@@ -90,7 +92,8 @@ export const architectureSchema: z.ZodType<ArchitectureReport> = z.object({
           .max(14),
       }),
     )
-    .max(8),
+    .max(8)
+    .default([]),
   mermaid: z.string().max(6000).describe('A mermaid `flowchart TD` diagram of the real modules'),
   risks: z
     .array(
@@ -98,10 +101,11 @@ export const architectureSchema: z.ZodType<ArchitectureReport> = z.object({
         title: z.string().max(160),
         detail: z.string().max(800),
         filePath: z.string().max(240).nullable().optional(),
-        severity: z.enum(['high', 'medium', 'low']),
+        severity: z.enum(['high', 'medium', 'low']).default('medium'),
       }),
     )
-    .max(15),
+    .max(15)
+    .default([]),
 });
 
 
