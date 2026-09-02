@@ -50,7 +50,10 @@ export interface ArchitectureReport {
   mermaid: string;
   risks: ArchitectureRisk[];
 }
-export const architectureSchema: z.ZodType<ArchitectureReport> = z.object({
+// The input is `unknown` on purpose: this only ever parses a JSON document
+// from a model, and the `.default([])` on the nested arrays means a valid
+// input may legitimately omit keys the output always has.
+export const architectureSchema: z.ZodType<ArchitectureReport, z.ZodTypeDef, unknown> = z.object({
   summary: z.string().min(20).max(4000),
   layers: z
     .array(

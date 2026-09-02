@@ -46,6 +46,20 @@ export async function detectSemgrep(options: Pick<SemgrepOptions, 'binary'>): Pr
   return cachedVersion.value;
 }
 
+/**
+ * Non-blocking view of the same probe, for callers that must not wait - the
+ * health endpoint is the platform's health check, and spawning a process while
+ * it is held open risks failing a deploy over a diagnostic. Returns whatever is
+ * cached and starts the probe if it has not run, so the answer is there on the
+ * next call.
+ */
+export function semgrepStatus(options: Pick<SemgrepOptions, 'binary'>): string | null {
+  if (!cachedVersion) {
+    void detectSemgrep(options);
+    return null;
+  }
+  return cachedVersion.value;
+}
 /** Test seam: forget the probe result so a later call re-checks. */
 export function resetSemgrepDetection(): void {
   cachedVersion = null;
