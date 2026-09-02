@@ -1,7 +1,56 @@
 import { z } from 'zod';
 import { GROUNDING_RULES, contextBlock } from './shared';
 
-export const architectureSchema = z.object({
+/**
+ * The report shape is written out rather than inferred from the schema below.
+ * `z.infer` on a schema this deeply nested sits right at TypeScript's inference
+ * limit: past it the compiler silently degrades the result, marking required
+ * array properties optional, and every `Pick<ArchitectureReport, ...>` in the
+ * analyser breaks with an error that points at the consumer rather than the
+ * cause. Declaring the type fixes it in place, and the annotation on the schema
+ * makes the compiler prove the two still agree.
+ */
+export interface ArchitectureLayer {
+  name: string;
+  purpose: string;
+  directories: string[];
+  keyFiles: string[];
+}
+
+export interface ArchitectureDirectoryPurpose {
+  path: string;
+  purpose: string;
+  responsibilities: string[];
+  importantFiles: string[];
+}
+
+export interface ArchitectureFlowStep {
+  label: string;
+  filePath?: string | null;
+  startLine?: number | null;
+}
+
+export interface ArchitectureFlow {
+  name: string;
+  steps: ArchitectureFlowStep[];
+}
+
+export interface ArchitectureRisk {
+  title: string;
+  detail: string;
+  filePath?: string | null;
+  severity: 'high' | 'medium' | 'low';
+}
+
+export interface ArchitectureReport {
+  summary: string;
+  layers: ArchitectureLayer[];
+  directoryPurposes: ArchitectureDirectoryPurpose[];
+  flows: ArchitectureFlow[];
+  mermaid: string;
+  risks: ArchitectureRisk[];
+}
+export const architectureSchema: z.ZodType<ArchitectureReport> = z.object({
   summary: z.string().min(20).max(4000),
   layers: z
     .array(
@@ -55,7 +104,6 @@ export const architectureSchema = z.object({
     .max(15),
 });
 
-export type ArchitectureReport = z.infer<typeof architectureSchema>;
 
 export const ARCHITECTURE_SYSTEM_PROMPT = `You describe the architecture of a repository you have been given a factual index of.
 
