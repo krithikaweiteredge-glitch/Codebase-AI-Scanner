@@ -17,7 +17,8 @@ export class AIGenerationUnavailable extends Error {
 export interface StructuredOptions<T> {
   system: string;
   user: string;
-  schema: z.ZodType<T>;
+  /** Parses raw model output, so the input side is unknown by definition. */
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>;
   task: string;
   maxTokens?: number;
   temperature?: number;
