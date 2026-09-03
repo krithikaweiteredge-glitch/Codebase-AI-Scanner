@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 const updateMany = vi.fn();
 vi.mock('../db', () => ({ prisma: { analysisRun: { updateMany: (...args: unknown[]) => updateMany(...args) } } }));
 
-const { STALE_RUN_MINUTES, sweepStaleRuns, startStaleRunSweeper } = await import('../jobs/staleRuns');
+// Static import is safe: vitest hoists the vi.mock above it, matching how
+// routes.test.ts fakes the database.
+import { STALE_RUN_MINUTES, startStaleRunSweeper, sweepStaleRuns } from '../jobs/staleRuns';
 
 describe('sweeping abandoned runs', () => {
   it('fails runs that have made no progress inside the window', async () => {
