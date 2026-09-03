@@ -318,6 +318,63 @@ export const STATIC_RULES: StaticRule[] = [
 
   // ---------------------------------------------------------------------- bugs
   {
+    // A credential lookup that puts the password in the query can only work if
+    // the stored value is the password itself. Nothing else in the rule set
+    // catches the absence of hashing - sec.weak-hash only fires when a weak
+    // hash is used, so a codebase that hashes nothing at all scored clean.
+    id: 'sec.password.plaintext-lookup',
+    category: 'security',
+    type: 'plaintext-password',
+    title: 'Password compared in a database query',
+    severity: 'critical',
+    confidence: 0.8,
+    languages: JS,
+    pattern: /(?:findOne|findFirst|find|findAll|query)\s*\(\s*\{[^}]{0,160}\bpassword\b\s*[,:}]/,
+    unless: /bcrypt|argon2|scrypt|pbkdf2|\bhash(?:ed|Sync|Password)?\b/i,
+    description:
+      'Matching on the password column means the password is stored as written. Anyone who reads the database - a backup, a log, an injection - reads every password, and users reuse them elsewhere.',
+    recommendation:
+      'Store a bcrypt, scrypt or Argon2 hash, look the user up by identifier alone, and compare with the algorithm-s verify function.',
+    cwe: 'CWE-256',
+    skipTests: true,
+  },
+  {
+    // The sibling rule matches create/update/save/insert calls. A Mongoose or
+    // Sequelize model is just as often constructed directly, which that pattern
+    // never saw.
+    id: 'sec.mass-assignment.constructor',
+    category: 'security',
+    type: 'mass-assignment',
+    title: 'Request body passed straight into a model constructor',
+    severity: 'high',
+    confidence: 0.75,
+    languages: JS,
+    pattern: /new\s+[A-Z]\w*\s*\(\s*\{?\s*(?:\.\.\.\s*)?req\.body\s*[,)}]/,
+    description:
+      'Constructing a model from the whole request body lets a caller set any field the schema has, including roles, ownership and verification flags.',
+    recommendation: 'Pick the permitted fields explicitly, or validate the body against a schema before constructing the model.',
+    cwe: 'CWE-915',
+    skipTests: true,
+  },
+  {
+    // sec.cors.wildcard looks for an explicit '*'. The middleware's default is
+    // already '*', so the most permissive configuration is the one with no
+    // configuration at all - and it was the one that read as safe.
+    id: 'sec.cors.default-open',
+    category: 'security',
+    type: 'insecure-cors',
+    title: 'CORS middleware enabled with no options',
+    severity: 'medium',
+    confidence: 0.7,
+    languages: JS,
+    pattern: /\bcors\s*\(\s*\)/,
+    description:
+      'Called with no options the cors middleware answers every origin, so any site a user visits can call these endpoints with their session.',
+    recommendation: 'Pass an explicit origin allowlist, and set credentials only for the origins that need it.',
+    cwe: 'CWE-942',
+    skipTests: true,
+  },
+  {
     id: 'bug.empty-catch',
     category: 'bug',
     type: 'swallowed-exception',
