@@ -413,6 +413,28 @@ async function runSecretHistory(
  * advisories), and neither being down is a reason to lose an entire analysis
  * run - the step records why it was skipped and the rest carries on.
  */
+/**
+ * Package names the indexed code actually imports, taken from the external
+ * edges of the dependency graph. Used to tell a reachable advisory from one in
+ * a build tool that never runs.
+ */
+async function importedPackageNames(repositoryId: string): Promise<Set<string>> {
+  const rows = await prisma.dependency.findMany({
+    where: { repositoryId, isExternal: true },
+    select: { specifier: true },
+    take: 20000,
+  });
+  const names = new Set<string>();
+  for (const row of rows) {
+    const specifier = row.specifier;
+    if (!specifier || specifier.startsWith('.') || specifier.startsWith('/')) continue;
+    // `@scope/pkg/sub` -> `@scope/pkg`, `pkg/sub` -> `pkg`.
+    const parts = specifier.split('/');
+    names.add(specifier.startsWith('@') ? parts.slice(0, 2).join('/') : (parts[0] ?? specifier));
+  }
+  return names;
+}
+
 async function runScaStep(
   ctx: AnalysisContext,
   files: readonly AnalyzableFile[],
@@ -444,7 +466,11 @@ async function runScaStep(
         commitSha: ctx.commitSha,
       },
       files,
-      { baseUrl: env.OSV_API_URL, maxDetailFetches: MAX_ADVISORY_FETCHES },
+      {
+        baseUrl: env.OSV_API_URL,
+        maxDetailFetches: MAX_ADVISORY_FETCHES,
+        importedPackages: await importedPackageNames(ctx.repositoryId),
+      },
     );
 
     if (!result.manifests.length) {

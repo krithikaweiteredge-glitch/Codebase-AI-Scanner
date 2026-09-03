@@ -24,6 +24,12 @@ export interface ResolvedPackage {
   file: string;
   /** False for transitive dependencies pulled in by something else. */
   direct: boolean;
+  /**
+   * Which section declared it. A build tool with a CVE is not the same risk as
+   * a library the running service loads, and reporting them identically is
+   * what buries the findings that matter.
+   */
+  scope: 'production' | 'development' | 'optional';
   /** 1-based line in `file` where the package is declared, when known. */
   line?: number;
 }
@@ -116,6 +122,8 @@ export function dedupePackages(packages: readonly ResolvedPackage[]): ResolvedPa
 // ---------------------------------------------------------------------------
 
 interface PackageLockV2Entry {
+  /** npm marks a development-only install here. */
+  dev?: boolean;
   version?: string;
   link?: boolean;
   dependencies?: Record<string, string>;
@@ -124,6 +132,8 @@ interface PackageLockV2Entry {
 }
 
 interface PackageLockV1Entry {
+  /** npm marks a development-only install here. */
+  dev?: boolean;
   version?: string;
   dependencies?: Record<string, PackageLockV1Entry>;
 }
@@ -143,10 +153,20 @@ function parsePackageLock(file: string, content: string): ResolvedPackage[] {
     // actually declared lives on the project entries - "" for the root, plus
     // one per workspace.
     const declared = new Set<string>();
+    const scopes = new Map<string, ResolvedPackage['scope']>();
+    const SECTION_SCOPE = {
+      dependencies: 'production',
+      devDependencies: 'development',
+      optionalDependencies: 'optional',
+    } as const;
     for (const [installPath, entry] of Object.entries(lock.packages)) {
       if (installPath.includes(NODE_MODULES)) continue;
       for (const section of ['dependencies', 'devDependencies', 'optionalDependencies'] as const) {
-        for (const name of Object.keys(entry[section] ?? {})) declared.add(name);
+        for (const name of Object.keys(entry[section] ?? {})) {
+          declared.add(name);
+          // Production wins: a package declared both ways ships.
+          if (SECTION_SCOPE[section] === 'production' || !scopes.has(name)) scopes.set(name, SECTION_SCOPE[section]);
+        }
       }
     }
 
@@ -163,6 +183,9 @@ function parsePackageLock(file: string, content: string): ResolvedPackage[] {
         version: entry.version,
         file,
         direct: declared.has(name),
+        // A transitive package inherits nothing useful, so anything not
+        // declared as development is treated as shipping.
+        scope: scopes.get(name) ?? (entry.dev ? 'development' : 'production'),
       });
     }
     return out;
@@ -174,7 +197,15 @@ function parsePackageLock(file: string, content: string): ResolvedPackage[] {
   const walk = (deps: Record<string, PackageLockV1Entry> | undefined, depth: number): void => {
     if (!deps) return;
     for (const [name, entry] of Object.entries(deps)) {
-      if (entry.version) out.push({ ecosystem: 'npm', name, version: entry.version, file, direct: depth === 0 });
+      if (entry.version)
+        out.push({
+          ecosystem: 'npm',
+          name,
+          version: entry.version,
+          file,
+          direct: depth === 0,
+          scope: entry.dev ? 'development' : 'production',
+        });
       walk(entry.dependencies, depth + 1);
     }
   };
@@ -204,7 +235,7 @@ function parseYarnLock(file: string, content: string): ResolvedPackage[] {
     if (!first) continue;
 
     const name = npmNameFromDescriptor(first);
-    if (name) out.push({ ecosystem: 'npm', name, version: versionMatch[1], file, direct: false });
+    if (name) out.push({ ecosystem: 'npm', name, version: versionMatch[1], file, direct: false, scope: 'production' });
   }
   return out;
 }
@@ -234,7 +265,7 @@ function parsePnpmLock(file: string, content: string): ResolvedPackage[] {
     const name = keyMatch?.[1];
     const version = keyMatch?.[2];
     if (!name || !version) continue;
-    out.push({ ecosystem: 'npm', name, version, file, direct: false });
+    out.push({ ecosystem: 'npm', name, version, file, direct: false, scope: 'production' });
   }
   return out;
 }
@@ -254,7 +285,7 @@ function parsePackageJson(file: string, content: string): ResolvedPackage[] {
       if (typeof range !== 'string') continue;
       const exact = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.exec(range.trim());
       if (!exact?.[0]) continue;
-      out.push({ ecosystem: 'npm', name, version: exact[0], file, direct: true });
+      out.push({ ecosystem: 'npm', name, version: exact[0], file, direct: true, scope: 'production' });
     }
   }
   return out;
@@ -274,7 +305,7 @@ function parseRequirementsTxt(file: string, content: string): ResolvedPackage[] 
     const name = match?.[1];
     const version = match?.[2];
     if (!name || !version || version.includes('*')) continue;
-    out.push({ ecosystem: 'PyPI', name, version, file, direct: true });
+    out.push({ ecosystem: 'PyPI', name, version, file, direct: true, scope: 'production' });
   }
   return out;
 }
@@ -289,7 +320,7 @@ function parsePipfileLock(file: string, content: string): ResolvedPackage[] {
     for (const [name, entry] of Object.entries(block)) {
       const version = entry?.version?.replace(/^==/, '').trim();
       if (!version) continue;
-      out.push({ ecosystem: 'PyPI', name, version, file, direct: true });
+      out.push({ ecosystem: 'PyPI', name, version, file, direct: true, scope: 'production' });
     }
   }
   return out;
@@ -302,7 +333,7 @@ function parsePoetryLock(file: string, content: string): ResolvedPackage[] {
     name,
     version,
     file,
-    direct: false,
+    direct: false, scope: 'production',
   }));
 }
 
@@ -337,7 +368,14 @@ function parseGoMod(file: string, content: string): ResolvedPackage[] {
     const name = match?.[1];
     const version = match?.[2];
     if (!name || !version) continue;
-    out.push({ ecosystem: 'Go', name, version, file, direct: !body.includes('// indirect') });
+    out.push({
+      ecosystem: 'Go',
+      name,
+      version,
+      file,
+      direct: !body.includes('// indirect'),
+      scope: 'production',
+    });
   }
   return out;
 }
@@ -348,7 +386,7 @@ function parseCargoLock(file: string, content: string): ResolvedPackage[] {
     name,
     version,
     file,
-    direct: false,
+    direct: false, scope: 'production',
   }));
 }
 
@@ -369,7 +407,7 @@ function parseGemfileLock(file: string, content: string): ResolvedPackage[] {
     const name = match?.[1];
     const version = match?.[2];
     if (!name || !version) continue;
-    out.push({ ecosystem: 'RubyGems', name, version, file, direct: true });
+    out.push({ ecosystem: 'RubyGems', name, version, file, direct: true, scope: 'production' });
   }
   return out;
 }
@@ -383,7 +421,7 @@ function parseComposerLock(file: string, content: string): ResolvedPackage[] {
       const name = entry?.name;
       const version = entry?.version?.replace(/^v/, '');
       if (!name || !version) continue;
-      out.push({ ecosystem: 'Packagist', name, version, file, direct: true });
+      out.push({ ecosystem: 'Packagist', name, version, file, direct: true, scope: 'production' });
     }
   }
   return out;
