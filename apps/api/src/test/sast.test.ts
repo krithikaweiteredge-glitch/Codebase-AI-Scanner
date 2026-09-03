@@ -531,3 +531,54 @@ describe('rules for the languages that had almost none', () => {
     expect(ids('return sha256(data).hexdigest()', 'python')).not.toContain('sec.weak-hash.bare-call');
   });
 });
+
+describe('rules for ruby and php, which had none of their own', () => {
+  const ids = (content: string, language: string) =>
+    runStaticRules({ ...file('app/handler.' + language, content), language }).map((d) => d.ruleId);
+
+  it('flags PHP SQL built by concatenation and by interpolation', () => {
+    // Both shapes ship in digininja/DVWA. The interpolated one is the canonical
+    // example, and a rule written only for `.` concatenation missed it.
+    expect(ids(`$query = "UPDATE users SET first_name = '" . $data->first_name . "'";`, 'php')).toContain(
+      'sec.sql-injection.php',
+    );
+    expect(ids(`$query = "SELECT first_name FROM users WHERE user_id = '$id';";`, 'php')).toContain(
+      'sec.sql-injection.php',
+    );
+  });
+
+  it('leaves a PHP prepared statement alone', () => {
+    expect(ids(`$query = "SELECT user_id, role FROM users WHERE user = ? LIMIT 1";`, 'php')).not.toContain(
+      'sec.sql-injection.php',
+    );
+  });
+
+  it('flags a PHP shell command built from a variable', () => {
+    expect(ids(`$cmd = shell_exec( 'ping  ' . $target );`, 'php')).toContain('sec.command-injection.php');
+    expect(ids(`$cmd = shell_exec( 'ping -c 4 localhost' );`, 'php')).not.toContain('sec.command-injection.php');
+  });
+
+  it('flags a Ruby class chosen by the caller', () => {
+    expect(ids('model = params[:class].classify.constantize', 'ruby')).toContain('sec.unsafe-reflection.ruby');
+    expect(ids('model = ALLOWED.fetch(params[:class])', 'ruby')).not.toContain('sec.unsafe-reflection.ruby');
+  });
+
+  it('flags Marshal.load, which the generic deserialization rule never covered', () => {
+    expect(ids('user = Marshal.load(Base64.decode64(params[:user]))', 'ruby')).toContain(
+      'sec.unsafe-deserialization.ruby',
+    );
+    expect(ids('user = JSON.parse(params[:user])', 'ruby')).not.toContain('sec.unsafe-deserialization.ruby');
+  });
+
+  it('flags html_safe on an interpolated string but not on literal markup', () => {
+    expect(ids('flash[:error] = "sent to #{params[:email]}".html_safe', 'ruby')).toContain('sec.xss.ruby-html-safe');
+    expect(ids('x = "<b>bold</b>".html_safe', 'ruby')).not.toContain('sec.xss.ruby-html-safe');
+  });
+
+  it('flags an interpolated ActiveRecord condition, quotes and all', () => {
+    // The condition almost always quotes the value - "id = '#{...}'" - which a
+    // quote-excluding pattern stopped at.
+    expect(ids(`user = User.where("id = '#{params[:user][:id]}'")[0]`, 'ruby')).toContain('sec.sql-injection.ruby');
+    expect(ids('user = User.where(id: params[:id]).first', 'ruby')).not.toContain('sec.sql-injection.ruby');
+  });
+});
