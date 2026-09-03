@@ -413,3 +413,51 @@ describe('authentication rules', () => {
     expect(ids('app.use(cors({ origin: ["https://app.example.com"] }));')).not.toContain('sec.cors.default-open');
   });
 });
+
+describe('rules derived from scanning public vulnerable applications', () => {
+  const ids = (content: string, filePath = 'app/server.js') =>
+    runStaticRules({ ...file(filePath, content), language: 'javascript' }).map((d) => d.ruleId);
+
+  it('flags a Mongo $where built by interpolation (OWASP NodeGoat)', () => {
+    expect(ids('return { $where: `this.userId == ${userId} && this.stocks > ${threshold}` };')).toContain(
+      'sec.nosql-injection.where',
+    );
+    expect(ids('return { $where: "this.userId == " + userId };')).toContain('sec.nosql-injection.where');
+  });
+
+  it('leaves a $where with no input in it alone', () => {
+    expect(ids('return { $where: "this.stocks > 0" };')).not.toContain('sec.nosql-injection.where');
+  });
+
+  it('flags a signing secret written into the source (appsecco/dvna)', () => {
+    expect(ids("app.use(session({ secret: 'keyboard cat' }));")).toContain('sec.secret.hardcoded-literal');
+    expect(ids("const jwtSecret = 's3cr3t-value';")).toContain('sec.secret.hardcoded-literal');
+  });
+
+  it('does not flag a secret read from configuration or an obvious placeholder', () => {
+    expect(ids('app.use(session({ secret: process.env.SESSION_SECRET }));')).not.toContain(
+      'sec.secret.hardcoded-literal',
+    );
+    expect(ids("const jwtSecret = 'your-secret-here';")).not.toContain('sec.secret.hardcoded-literal');
+  });
+
+  it('flags a session cookie without Secure or HttpOnly', () => {
+    expect(ids('app.use(session({ cookie: { secure: false } }));')).toContain('sec.cookie.insecure-flags');
+    expect(ids('res.cookie("sid", id, { httpOnly: false });')).toContain('sec.cookie.insecure-flags');
+  });
+
+  it('anchors the cookie finding to the offending line, not a comment above it', () => {
+    // The first version matched across lines and started inside "// Init Session",
+    // so the runner discarded it as commented out and the bug went unreported.
+    const content = ['// Init Session', 'app.use(session({', '  cookie: { secure: false }', '}))'].join('\n');
+    const drafts = runStaticRules({ ...file('app/server.js', content), language: 'javascript' });
+    const cookie = drafts.find((d) => d.ruleId === 'sec.cookie.insecure-flags');
+    expect(cookie?.startLine).toBe(3);
+  });
+
+  it('leaves a correctly configured cookie alone', () => {
+    expect(ids('app.use(session({ cookie: { secure: true, httpOnly: true } }));')).not.toContain(
+      'sec.cookie.insecure-flags',
+    );
+  });
+});
