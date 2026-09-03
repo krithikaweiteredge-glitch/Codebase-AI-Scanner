@@ -2,6 +2,7 @@ import { buildApp } from './app';
 import { prisma } from './db';
 import { env } from './env';
 import { queueConfigurationWarning } from './jobs/queue';
+import { startStaleRunSweeper } from './jobs/staleRuns';
 
 async function main(): Promise<void> {
   const app = await buildApp();
@@ -11,8 +12,15 @@ async function main(): Promise<void> {
   const queueWarning = queueConfigurationWarning();
   if (queueWarning) app.log.error(queueWarning);
 
+  // This process runs the jobs it accepts, so it owns cleaning up after itself.
+  // The sweeper used to live only in the worker entry point, which the Render
+  // blueprint never declared, so in production nothing ever marked an abandoned
+  // run as failed and it sat at "running" indefinitely.
+  const stopSweeper = env.WORKER_ENABLED ? startStaleRunSweeper('api') : null;
+
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, 'shutting down');
+    stopSweeper?.();
     await app.close();
     await prisma.$disconnect();
     process.exit(0);
