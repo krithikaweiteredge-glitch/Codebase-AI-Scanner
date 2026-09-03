@@ -4,6 +4,7 @@ import { prisma } from '../db';
 import { hashPassword, verifyPassword } from '../lib/crypto';
 import { badRequest, conflict, unauthorized } from '../errors';
 import {
+  createApiToken,
   SESSION_COOKIE,
   attachUser,
   clearSessionCookie,
@@ -68,6 +69,19 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/auth/me', { preHandler: attachUser }, async (request) => {
     if (!request.user) return { user: null };
     return { user: request.user };
+  });
+
+  // A token for automation. Shown once, because only its hash is kept - the
+  // same reason a lost one is replaced rather than recovered.
+  app.post('/api/auth/tokens', { preHandler: requireAuth }, async (request, reply) => {
+    const body = z.object({ label: z.string().max(60).optional() }).parse(request.body ?? {});
+    const { token, expiresAt } = await createApiToken(request.user!.id, body.label);
+    reply.code(201);
+    return {
+      token,
+      expiresAt,
+      note: 'Store this now - it is not shown again. Revoke it by deleting the session.',
+    };
   });
 
   app.get('/api/auth/sessions', { preHandler: requireAuth }, async (request) => {

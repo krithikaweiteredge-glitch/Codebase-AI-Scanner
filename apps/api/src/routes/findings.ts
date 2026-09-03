@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../auth/session';
 import { prisma } from '../db';
+import { toSarif } from '../analyzers/sarif';
 import { AI_DISCLAIMER } from '../prompts/shared';
 import { forbidden, notFound } from '../errors';
 import { loadRepository, resolveBranch } from '../lib/access';
@@ -171,6 +172,32 @@ export async function findingRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /** Cross-repository summary for the top-level dashboard. */
+  // SARIF, so findings reach GitHub's Security tab, an editor, or any other
+  // consumer that already reads the format. Findings that live only in this
+  // product's own UI are findings someone has to remember to go and look at.
+  app.get('/api/repositories/:id/findings.sarif', async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const repository = await loadRepository(request.user!.id, id);
+
+    const findings = await prisma.analysisFinding.findMany({
+      where: { repositoryId: id, falsePositive: false, resolved: false, reviewId: null },
+      orderBy: [{ severity: 'asc' }, { filePath: 'asc' }],
+      take: 5000,
+    });
+
+    const branch = await prisma.repositoryBranch.findFirst({
+      where: { repositoryId: id, indexedSha: { not: null } },
+      orderBy: [{ isDefault: 'desc' }, { indexedAt: 'desc' }],
+    });
+
+    reply.header('content-type', 'application/sarif+json; charset=utf-8');
+    reply.header('content-disposition', `attachment; filename="${repository.name}.sarif"`);
+    return toSarif(findings, {
+      commitSha: branch?.indexedSha ?? null,
+      repositoryUri: repository.htmlUrl,
+    });
+  });
+
   app.get('/api/findings/summary', async (request) => {
     const repositories = await prisma.repository.findMany({
       where: { userId: request.user!.id },
