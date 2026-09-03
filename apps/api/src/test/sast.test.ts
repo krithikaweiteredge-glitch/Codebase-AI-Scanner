@@ -485,3 +485,49 @@ describe('anchoring a multi-line match', () => {
     expect(drafts.find((d) => d.ruleId === 'sec.cookie.insecure-flags')).toBeUndefined();
   });
 });
+
+describe('rules for the languages that had almost none', () => {
+  const ids = (content: string, language: string, filePath = 'src/app.' + language) =>
+    runStaticRules({ ...file(filePath, content), language }).map((d) => d.ruleId);
+
+  it('flags a Java command built by concatenation (SasanLabs/VulnerableApp)', () => {
+    expect(ids('new ProcessBuilder(new String[] {"sh", "-c", "ping -c 2 " + ipAddress});', 'java')).toContain(
+      'sec.command-injection.java',
+    );
+    expect(ids('Runtime.getRuntime().exec("ls " + dir);', 'java')).toContain('sec.command-injection.java');
+  });
+
+  it('leaves a Java command of literals alone', () => {
+    expect(ids('new ProcessBuilder("ls", "-la");', 'java')).not.toContain('sec.command-injection.java');
+  });
+
+  it('flags a Go command with an argument the code does not control', () => {
+    // Both forms appear verbatim in Contrast-Security-OSS/go-test-bench.
+    expect(ids('cmd = exec.Command("echo", in)', 'go')).toContain('sec.command-injection.go');
+    expect(ids('cmd = exec.Command(args[0], args[1:]...)', 'go')).toContain('sec.command-injection.go');
+  });
+
+  it('leaves a Go command of literals alone', () => {
+    expect(ids('cmd = exec.Command("ls")', 'go')).not.toContain('sec.command-injection.go');
+  });
+
+  it('flags an assembled string marked as trusted HTML', () => {
+    expect(ids('return template.HTML(strings.Join(out, "\n"))', 'go')).toContain('sec.xss.go-template-html');
+  });
+
+  it('leaves literal markup alone, which is what the conversion is for', () => {
+    expect(ids('return template.HTML("<b>bold</b>")', 'go')).not.toContain('sec.xss.go-template-html');
+  });
+
+  it('flags a bare md5 call, which the qualified pattern never saw', () => {
+    // `from hashlib import md5` leaves no `hashlib.` prefix to match on, and the
+    // bare form is the one people write. Found in anxolerd/dvpwa.
+    expect(ids("return self.pwd_hash == md5(password.encode('utf-8')).hexdigest()", 'python')).toContain(
+      'sec.weak-hash.bare-call',
+    );
+  });
+
+  it('does not flag a modern digest', () => {
+    expect(ids('return sha256(data).hexdigest()', 'python')).not.toContain('sec.weak-hash.bare-call');
+  });
+});

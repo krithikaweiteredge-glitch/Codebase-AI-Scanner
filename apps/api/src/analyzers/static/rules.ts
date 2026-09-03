@@ -434,6 +434,86 @@ export const STATIC_RULES: StaticRule[] = [
     skipTests: true,
   },
   {
+    // Found in SasanLabs/VulnerableApp:
+    //   new ProcessBuilder(new String[] {"sh", "-c", "ping -c 2 " + ipAddress})
+    // sec.command-injection is scoped to JavaScript and its Python sibling to
+    // Python, so Java had no command-injection rule at all.
+    id: 'sec.command-injection.java',
+    category: 'security',
+    type: 'command-injection',
+    title: 'Shell command built by concatenation',
+    severity: 'critical',
+    confidence: 0.8,
+    languages: ['java', 'kotlin', 'scala'],
+    pattern: /(?:Runtime\.getRuntime\s*\(\)\s*\.s*exec|new\s+ProcessBuilder)[^;\n]{0,200}\+/,
+    description:
+      'A command assembled from a value the caller supplies runs whatever that value contains once it reaches a shell. Passing it through sh -c removes even the argument boundary that would otherwise limit it.',
+    recommendation: 'Pass the command and each argument as separate array elements without a shell, and validate the value against an allowlist.',
+    cwe: 'CWE-78',
+    skipTests: true,
+  },
+  {
+    // Found in Contrast-Security-OSS/go-test-bench:
+    //   exec.Command("echo", in)   and   exec.Command(args[0], args[1:]...)
+    // Go had thirteen applicable rules and none of them for its own sinks.
+    id: 'sec.command-injection.go',
+    category: 'security',
+    type: 'command-injection',
+    title: 'Command run with an argument the code does not control',
+    severity: 'high',
+    confidence: 0.7,
+    languages: ['go'],
+    pattern: /exec\.Command(?:Context)?\s*\([^)\n]*[^"'`)(,+\s][^)\n]*\)/,
+    unless: /\/\/|exec\.Command(?:Context)?\s*\(\s*["'`][^"'`]*["'`]\s*\)/,
+    description:
+      'Every argument reaching exec.Command is passed to the program as written. A value from a request decides what runs, and with a shell wrapper it decides how much else runs alongside it.',
+    recommendation: 'Keep the program name a constant, validate arguments against an allowlist, and never route them through sh -c.',
+    cwe: 'CWE-78',
+    skipTests: true,
+  },
+  {
+    // Found in the same repository: template.HTML(strings.Join(out, "\\n")).
+    // The conversion is the whole point of the type - it tells html/template
+    // this string is already safe - so applying it to assembled content is
+    // exactly the case the package exists to prevent.
+    id: 'sec.xss.go-template-html',
+    category: 'security',
+    type: 'xss',
+    title: 'Assembled string marked as trusted HTML',
+    severity: 'high',
+    confidence: 0.75,
+    languages: ['go'],
+    pattern: /template\.(?:HTML|JS|CSS|URL|HTMLAttr)\s*\(\s*(?!["'`])/,
+    description:
+      'Converting to template.HTML tells html/template the string needs no escaping. Anything a caller influenced then reaches the page as markup, which is the injection the package would otherwise have prevented.',
+    recommendation: 'Pass the value as ordinary data and let the template escape it; reserve the conversion for markup the code wrote itself.',
+    cwe: 'CWE-79',
+    skipTests: true,
+  },
+  {
+    // Found in anxolerd/dvpwa:
+    //   return self.pwd_hash == md5(password.encode('utf-8')).hexdigest()
+    // sec.weak-hash matches hashlib.md5(...), but `from hashlib import md5`
+    // leaves a bare call that the qualified pattern never sees - and the bare
+    // form is the one people write.
+    id: 'sec.weak-hash.bare-call',
+    category: 'security',
+    type: 'weak-hash',
+    title: 'Password hashed with a broken digest',
+    severity: 'critical',
+    confidence: 0.85,
+    languages: ['python'],
+    // Lazy up to .hexdigest, because the argument usually contains its own
+    // parentheses - md5(password.encode('utf-8')) - and a negated class
+    // stops at the first one.
+    pattern: /\b(?:md5|sha1)\s*\([^\n]{0,160}?\.hexdigest\s*\(/i,
+    description:
+      'MD5 and SHA-1 are fast and collision-prone, which is the opposite of what a password needs. A stolen table of these is cracked at billions of guesses a second on ordinary hardware.',
+    recommendation: 'Use bcrypt, scrypt or Argon2 through a library that also handles the salt, and rehash on next login.',
+    cwe: 'CWE-327',
+    skipTests: true,
+  },
+  {
     id: 'bug.empty-catch',
     category: 'bug',
     type: 'swallowed-exception',
