@@ -461,3 +461,27 @@ describe('rules derived from scanning public vulnerable applications', () => {
     );
   });
 });
+
+describe('anchoring a multi-line match', () => {
+  it('reports on the offending line when the match begins in a comment', () => {
+    // The cookie rule matched from the word "Session" in the comment; the
+    // runner then discarded the finding because that line was commented out.
+    const content = [
+      '// Intialize Session',
+      'app.use(session({',
+      '  resave: true,',
+      '  cookie: { secure: false }',
+      '}))',
+    ].join('\n');
+    const drafts = runStaticRules({ ...file('app/server.js', content), language: 'javascript' });
+    const cookie = drafts.find((d) => d.ruleId === 'sec.cookie.insecure-flags');
+    expect(cookie).toBeDefined();
+    expect(cookie?.startLine).toBe(4);
+  });
+
+  it('still drops a finding whose every matched line is commented out', () => {
+    const content = ['// app.use(session({ cookie: { secure: false } }))'].join('\n');
+    const drafts = runStaticRules({ ...file('app/server.js', content), language: 'javascript' });
+    expect(drafts.find((d) => d.ruleId === 'sec.cookie.insecure-flags')).toBeUndefined();
+  });
+});
