@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { relativise } from '../analyzers/sast';
+import { runStaticRules } from '../analyzers/static/rules';
 import { materialize, safeJoin } from '../analyzers/sast/workspace';
 import {
   describeDataflow,
@@ -373,5 +374,42 @@ describe('parseSemgrepOutput', () => {
 
   it('rejects output that is not JSON', () => {
     expect(() => parseSemgrepOutput('semgrep: command failed')).toThrow(/not valid JSON/);
+  });
+});
+
+describe('authentication rules', () => {
+  const ids = (content: string) =>
+    runStaticRules({ ...file('backend/routes/authRoutes.js', content), language: 'javascript' }).map((d) => d.ruleId);
+
+  it('flags a password compared inside the query', () => {
+    // The version that shipped: matching on the password column only works if
+    // the stored value is the password itself.
+    expect(ids('const user = await User.findOne({ email, password });')).toContain('sec.password.plaintext-lookup');
+  });
+
+  it('does not flag a lookup by identifier followed by a hash comparison', () => {
+    expect(ids('const user = await User.findOne({ email });')).not.toContain('sec.password.plaintext-lookup');
+    expect(ids('const u = await User.findOne({ email, password: await bcrypt.hash(p, 10) });')).not.toContain(
+      'sec.password.plaintext-lookup',
+    );
+  });
+
+  it('flags a request body passed to a model constructor', () => {
+    expect(ids('const user = new User(req.body);')).toContain('sec.mass-assignment.constructor');
+    expect(ids('const user = new User({ ...req.body });')).toContain('sec.mass-assignment.constructor');
+  });
+
+  it('does not flag a constructor given explicit fields', () => {
+    expect(ids('const user = new User({ email: req.body.email, name: req.body.name });')).not.toContain(
+      'sec.mass-assignment.constructor',
+    );
+  });
+
+  it('flags cors() called with no options, whose default is every origin', () => {
+    expect(ids('app.use(cors());')).toContain('sec.cors.default-open');
+  });
+
+  it('does not flag cors given an explicit origin', () => {
+    expect(ids('app.use(cors({ origin: ["https://app.example.com"] }));')).not.toContain('sec.cors.default-open');
   });
 });
