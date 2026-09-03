@@ -76,7 +76,16 @@ export interface ScaResult {
   advisories: number;
 }
 
-export type ScaOptions = OsvClientOptions;
+export interface ScaOptions extends OsvClientOptions {
+  /**
+   * Package names some indexed file actually imports, as recorded by the
+   * dependency graph. An advisory in a package nothing imports is real but not
+   * reachable, and reporting the two identically is what buries the findings
+   * that matter - a create-react-app project carries dozens of build-tool
+   * advisories that never reach a browser.
+   */
+  importedPackages?: ReadonlySet<string>;
+}
 
 /**
  * Runs the scan and returns findings. Throws only when the OSV API itself is
@@ -115,7 +124,7 @@ export async function scanDependencies(
     const matched = ids.map((id) => advisories.get(id)).filter((v): v is OsvVulnerability => Boolean(v));
     if (!matched.length) continue;
 
-    drafts.push(buildFinding(pkg, matched));
+    drafts.push(buildFinding(pkg, matched, options.importedPackages));
   }
 
   return {
@@ -205,12 +214,32 @@ async function fetchLockfilesFromGitHub(ctx: ScaContext): Promise<ManifestSource
  * six CVEs is one upgrade decision, not six, and reporting it six times buries
  * everything else on the findings page.
  */
-function buildFinding(pkg: ResolvedPackage, advisories: OsvVulnerability[]): AnalysisFindingDraft {
+/** One step down the scale, for a package that is real but not reachable. */
+const LOWER: Record<Severity, Severity> = {
+  critical: 'high',
+  high: 'medium',
+  medium: 'low',
+  low: 'low',
+  info: 'info',
+};
+
+export function buildFinding(
+  pkg: ResolvedPackage,
+  advisories: OsvVulnerability[],
+  imported: ReadonlySet<string> | undefined,
+): AnalysisFindingDraft {
   const ranked = [...advisories].sort(
     (a, b) => SEVERITY_ORDER[severityOf(b)] - SEVERITY_ORDER[severityOf(a)],
   );
   const worst = ranked[0] as OsvVulnerability;
-  const severity = severityOf(worst);
+  const advisorySeverity = severityOf(worst);
+
+  // Reachability is only asserted when the graph was supplied; without it every
+  // package is treated as reachable rather than quietly downgraded.
+  const reachable = imported ? imported.has(pkg.name) : true;
+  const shipsToProduction = pkg.scope === 'production';
+  const deprioritised = imported !== undefined && !reachable && (!shipsToProduction || !pkg.direct);
+  const severity = deprioritised ? LOWER[advisorySeverity] : advisorySeverity;
 
   const fixes = [...new Set(ranked.flatMap((v) => fixedVersionsFor(v, pkg.ecosystem, pkg.name)))];
   const upgradeTarget = highestVersion(fixes);
@@ -234,7 +263,7 @@ function buildFinding(pkg: ResolvedPackage, advisories: OsvVulnerability[]): Ana
     type: 'vulnerable-dependency',
     severity,
     title,
-    description: describe(pkg, ranked, upgradeTarget),
+    description: describe(pkg, ranked, upgradeTarget, { reachable, deprioritised, advisorySeverity }),
     evidence: `${pkg.file}${pkg.line ? `:${pkg.line}` : ''} resolves ${pkg.name} to ${pkg.version} (${pkg.ecosystem}).`,
     recommendation: recommend(pkg, upgradeTarget),
     filePath: pkg.file,
@@ -251,6 +280,8 @@ function buildFinding(pkg: ResolvedPackage, advisories: OsvVulnerability[]): Ana
       package: pkg.name,
       version: pkg.version,
       direct: pkg.direct,
+      scope: pkg.scope,
+      reachable,
       manifest: pkg.file,
       fixedVersions: fixes,
       upgradeTo: upgradeTarget,
@@ -266,15 +297,28 @@ function buildFinding(pkg: ResolvedPackage, advisories: OsvVulnerability[]): Ana
   };
 }
 
-function describe(pkg: ResolvedPackage, advisories: OsvVulnerability[], upgradeTarget: string | null): string {
+function describe(
+  pkg: ResolvedPackage,
+  advisories: OsvVulnerability[],
+  upgradeTarget: string | null,
+  reach: { reachable: boolean; deprioritised: boolean; advisorySeverity: Severity },
+): string {
   const relation = pkg.direct
     ? 'a direct dependency'
     : 'a transitive dependency, pulled in by another package rather than declared here';
+  const scopeNote =
+    pkg.scope === 'development'
+      ? ' It is declared as a development dependency, so it builds and tests the project rather than running in it.'
+      : '';
+  const reachNote = reach.deprioritised
+    ? ` No indexed file imports \`${pkg.name}\`, so this is unlikely to be reachable at runtime. ` +
+      `Severity is shown one step below the advisory's own rating of ${reach.advisorySeverity}.`
+    : '';
 
   const lines = [
     `\`${pkg.name}\` is pinned to ${pkg.version} in \`${pkg.file}\` as ${relation}. ` +
       `That version is listed as affected by ${advisories.length} published ` +
-      `${advisories.length === 1 ? 'advisory' : 'advisories'}:`,
+      `${advisories.length === 1 ? 'advisory' : 'advisories'}.${scopeNote}${reachNote}`,
     '',
   ];
 

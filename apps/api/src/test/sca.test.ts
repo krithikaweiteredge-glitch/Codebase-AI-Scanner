@@ -8,7 +8,8 @@ import {
   severityOf,
   type OsvVulnerability,
 } from '../analyzers/sca/osv';
-import { scanDependencies } from '../analyzers/sca';
+import { buildFinding, scanDependencies } from '../analyzers/sca';
+import type { ResolvedPackage } from '../analyzers/sca/manifests';
 import type { AnalyzableFile } from '../analyzers/types';
 
 function file(path: string, content: string): AnalyzableFile {
@@ -46,7 +47,7 @@ describe('npm manifest parsing', () => {
     expect(packages.find((p) => p.name === 'lodash')).toMatchObject({
       ecosystem: 'npm',
       version: '4.17.20',
-      direct: true,
+      direct: true, scope: 'production',
     });
     expect(packages.find((p) => p.name === 'qs')).toMatchObject({ version: '6.5.1', direct: false });
     // Workspace entries are the project's own code, not dependencies.
@@ -184,7 +185,7 @@ describe('other ecosystems', () => {
     expect(packages.find((p) => p.name === 'github.com/gin-gonic/gin')).toMatchObject({
       version: '1.7.0',
       ecosystem: 'Go',
-      direct: true,
+      direct: true, scope: 'production',
     });
     expect(packages.find((p) => p.name === 'golang.org/x/crypto')?.direct).toBe(false);
     expect(packages.find((p) => p.name === 'github.com/stretchr/testify')?.version).toBe('1.8.0');
@@ -249,9 +250,9 @@ describe('package collection', () => {
 
   it('prefers the direct declaration when a package appears in several manifests', () => {
     const deduped = dedupePackages([
-      { ecosystem: 'npm', name: 'lodash', version: '4.17.20', file: 'a/package-lock.json', direct: false },
-      { ecosystem: 'npm', name: 'lodash', version: '4.17.20', file: 'package.json', direct: true },
-      { ecosystem: 'npm', name: 'lodash', version: '4.17.21', file: 'b/package-lock.json', direct: false },
+      { ecosystem: 'npm', name: 'lodash', version: '4.17.20', file: 'a/package-lock.json', direct: false, scope: 'production' },
+      { ecosystem: 'npm', name: 'lodash', version: '4.17.20', file: 'package.json', direct: true, scope: 'production' },
+      { ecosystem: 'npm', name: 'lodash', version: '4.17.21', file: 'b/package-lock.json', direct: false, scope: 'production' },
     ]);
 
     expect(deduped).toHaveLength(2);
@@ -491,5 +492,39 @@ describe('scanDependencies', () => {
     expect(result.packagesScanned).toBe(1);
     expect(result.vulnerablePackages).toBe(0);
     expect(result.drafts).toEqual([]);
+  });
+});
+
+describe('reachability and dependency scope', () => {
+  const pkg = (over: Partial<ResolvedPackage> = {}): ResolvedPackage => ({
+    ecosystem: 'npm',
+    name: 'svgo',
+    version: '2.8.2',
+    file: 'frontend/package-lock.json',
+    direct: false,
+    scope: 'production',
+    ...over,
+  });
+  const high = { id: 'GHSA-test', database_specific: { severity: 'HIGH' }, affected: [] } as unknown as OsvVulnerability;
+
+  it('lowers a high advisory one step when nothing imports the package', () => {
+    const finding = buildFinding(pkg(), [high], new Set(['react', 'axios']));
+    expect(finding.severity).toBe('medium');
+    expect(String(finding.description)).toContain('unlikely to be reachable');
+  });
+
+  it('keeps the advisory severity when the code imports the package', () => {
+    const finding = buildFinding(pkg({ name: 'axios', direct: true }), [high], new Set(['axios']));
+    expect(finding.severity).toBe('high');
+    expect(String(finding.description)).not.toContain('unlikely to be reachable');
+  });
+
+  it('keeps the advisory severity when no graph was supplied', () => {
+    expect(buildFinding(pkg(), [high], undefined).severity).toBe('high');
+  });
+
+  it('says so when the package only builds the project', () => {
+    const finding = buildFinding(pkg({ scope: 'development' }), [high], new Set(['react']));
+    expect(String(finding.description)).toContain('development dependency');
   });
 });
