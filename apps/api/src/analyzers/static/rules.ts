@@ -375,6 +375,65 @@ export const STATIC_RULES: StaticRule[] = [
     skipTests: true,
   },
   {
+    // Found in OWASP NodeGoat: a $where clause built by interpolation. Mongo
+    // evaluates that string as JavaScript, so it is remote code execution
+    // against the database, and no SQL rule looks at it.
+    id: 'sec.nosql-injection.where',
+    category: 'security',
+    type: 'nosql-injection',
+    title: 'Mongo $where built from interpolated input',
+    severity: 'critical',
+    confidence: 0.85,
+    languages: JS,
+    pattern: /[$]where\s*[:=]\s*(?:`[^`]*[$]{|['"][^'"]*['"]\s*[+]|[^,}]*[+])/,
+    description:
+      'A $where clause is evaluated as JavaScript by the database. Anything a caller can influence in that string runs server-side with the query-s privileges.',
+    recommendation: 'Express the condition with query operators ($eq, $gt, $expr) instead of $where, and never build the clause from input.',
+    cwe: 'CWE-943',
+    skipTests: true,
+  },
+  {
+    // Found in appsecco/dvna: `secret: 'keyboard cat'`. The entropy scanner
+    // looks for provider-shaped tokens (AKIA..., ghp_...), so a short
+    // application secret in source scored clean while being just as usable.
+    id: 'sec.secret.hardcoded-literal',
+    category: 'security',
+    type: 'hardcoded-secret',
+    title: 'Signing secret written into the source',
+    severity: 'high',
+    confidence: 0.75,
+    languages: '*',
+    pattern:
+      /\b(?:secret|jwt_?secret|session_?secret|token_?secret|signing_?key|api_?secret|client_?secret)\s*[:=]\s*['"`][^'"`\n]{4,}['"`]/i,
+    unless:
+      /process\.env|import\.meta\.env|os\.environ|getenv|config\.get|vault|secretsmanager|<[^>]+>|your[-_ ]?secret|change[-_ ]?me|placeholder|example|xxxx/i,
+    description:
+      'A secret in source is a secret in every clone, every fork and every build log. Sessions signed with it can be forged by anyone who reads the repository.',
+    recommendation: 'Read it from the environment or a secret manager, and rotate the value that was committed - history keeps it.',
+    cwe: 'CWE-798',
+    skipTests: true,
+  },
+  {
+    // Also from dvna: `cookie: { secure: false }`. Nothing looked at cookie
+    // flags at all, so a session cookie sent in clear text read as fine.
+    id: 'sec.cookie.insecure-flags',
+    category: 'security',
+    type: 'insecure-cookie',
+    title: 'Session cookie sent without Secure or HttpOnly',
+    severity: 'medium',
+    confidence: 0.75,
+    languages: JS,
+    // Line-scoped on purpose. With `[^;]` the context could span lines, so the
+    // match started at the word "Session" in the comment above the call and the
+    // runner discarded the finding as commented out.
+    pattern: /(?:cookie|session)[^;\n]{0,160}\b(?:secure|httpOnly)\s*:\s*false|\bhttpOnly\s*:\s*false/i,
+    description:
+      'Secure:false lets the cookie travel over plain HTTP, where anyone on the path can read the session. HttpOnly:false lets any script on the page read it.',
+    recommendation: 'Set secure and httpOnly on session cookies, and sameSite unless a cross-site flow needs otherwise.',
+    cwe: 'CWE-614',
+    skipTests: true,
+  },
+  {
     id: 'bug.empty-catch',
     category: 'bug',
     type: 'swallowed-exception',
