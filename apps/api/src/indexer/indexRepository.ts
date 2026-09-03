@@ -16,6 +16,7 @@ import { detectLanguage, detectRole, isConfigFile, isTestFile, looksGenerated, t
 import { parseFile } from './parsers';
 import type { ParsedSymbol } from './parsers/types';
 import { detectHttpCalls, matchCallToRoute } from './httpCalls';
+import { initTreeSitter } from './parsers';
 import { buildStackProfile, type IndexedFileSummary, type StackProfile } from './projectMap';
 import type { RunProgress } from './progress';
 import { detectSecrets } from './secrets';
@@ -225,6 +226,11 @@ export async function indexRepository(options: IndexOptions, progress: RunProgre
   let chunkCount = 0;
   let embeddedCount = 0;
   let totalLines = 0;
+  // Load the WebAssembly grammars before anything is parsed. Without this
+  // Python, Go and Java silently keep their regular-expression analyzers,
+  // which is the behaviour this replaces rather than an error.
+  await initTreeSitter();
+
   const importsByPath = new Map<string, { specifier: string; kind: string }[]>();
   const summaries: IndexedFileSummary[] = [];
 
