@@ -77,3 +77,27 @@ policies:
     files: "apps/api/src/**"
     exclude: "apps/api/src/test/**"
     forbidPattern: "log\\.(info|warn|error|debug)\\([^)]*(decryptSecret|PRIVATE_KEY|githubTokenEnc)"
+
+# Findings this repository declares intentional.
+#
+#   files / rules   at least one must be given; a `rules` entry may end in *
+#   reason          recorded for the audit trail
+suppress:
+  - files: '**/benchmark/corpus.ts'
+    rules: ['sec.*', 'bug.*', 'perf.*']
+    reason: >-
+      The detection benchmark. Every case in it is deliberately vulnerable and
+      must stay that way, so reporting them says nothing about this codebase.
+
+  - files: '**/analyzers/static/rules.ts'
+    rules: ['sec.*']
+    reason: >-
+      Rule definitions describe the patterns they detect, so the file matches
+      itself. The rules are the subject here, not the code.
+
+  - files: ['**/*.test.ts', '**/*.test.tsx', '**/test/**']
+    rules: ['sec.*']
+    reason: >-
+      Test files quote vulnerable code as fixtures - a rule cannot be tested
+      without an example of what it detects. Not every rule sets skipTests, so
+      this says once what each rule would otherwise have to declare.

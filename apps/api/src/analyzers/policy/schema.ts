@@ -81,9 +81,35 @@ export const policyRuleSchema = z
 
 export type PolicyRule = z.infer<typeof policyRuleSchema>;
 
+/**
+ * A declaration that certain findings are intentional.
+ *
+ * Deliberately separate from the policy rules above: those add checks, this
+ * subtracts them, and conflating the two makes a policy file hard to read.
+ * One of `files` or `rules` must be given - an entry that narrows nothing
+ * would silence the whole report, which is never what anyone means.
+ */
+export const suppressionSchema = z
+  .object({
+    /** gitignore-syntax globs. Omitted means every file. */
+    files: stringList.optional(),
+    /** Rule ids, with a trailing * allowed as a prefix match. Omitted means every rule. */
+    rules: stringList.optional(),
+    /** Why, kept for the audit trail rather than used. */
+    reason: z.string().max(300).optional(),
+  })
+  .refine((entry) => Boolean(entry.files?.length || entry.rules?.length), {
+    message: 'a suppression must narrow by files, rules, or both',
+  });
+
+export type Suppression = z.infer<typeof suppressionSchema>;
+
+export const MAX_SUPPRESSIONS = 100;
 export const policyFileSchema = z.object({
   version: z.literal(1).default(1),
-  policies: z.array(policyRuleSchema).max(MAX_POLICIES),
+  policies: z.array(policyRuleSchema).max(MAX_POLICIES).default([]),
+  /** Findings this repository declares intentional. */
+  suppress: z.array(suppressionSchema).max(MAX_SUPPRESSIONS).default([]),
 });
 
 export type PolicyFile = z.infer<typeof policyFileSchema>;
@@ -143,5 +169,5 @@ export function parsePolicy(path: string, content: string): PolicyParseResult {
     seen.add(rule.id);
   }
 
-  return { file: { version: parsed.data.version, policies: usable }, errors };
+  return { file: { version: parsed.data.version, policies: usable, suppress: parsed.data.suppress }, errors };
 }
