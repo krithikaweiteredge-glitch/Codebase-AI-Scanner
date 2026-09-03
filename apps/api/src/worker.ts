@@ -15,32 +15,16 @@ import { prisma } from './db';
 import { env } from './env';
 import { registerJobs } from './jobs/analysisJob';
 import { getQueue, queueMode } from './jobs/queue';
-
-const STALE_RUN_MINUTES = 60;
+import { startStaleRunSweeper } from './jobs/staleRuns';
 
 async function main(): Promise<void> {
   registerJobs();
   // eslint-disable-next-line no-console
   console.log(`[worker] started; queue mode: ${queueMode()}; ai provider: ${env.AI_PROVIDER}`);
 
-  const tick = async (): Promise<void> => {
-    const cutoff = new Date(Date.now() - STALE_RUN_MINUTES * 60_000);
-    const stale = await prisma.analysisRun.updateMany({
-      where: { status: { in: ['queued', 'running'] }, updatedAt: { lt: cutoff } },
-      data: {
-        status: 'failed',
-        error: `Run exceeded ${STALE_RUN_MINUTES} minutes without progress and was marked failed.`,
-        finishedAt: new Date(),
-      },
-    });
-    if (stale.count) {
-      // eslint-disable-next-line no-console
-      console.warn(`[worker] marked ${stale.count} stale run(s) as failed`);
-    }
-  };
-
-  await tick();
-  setInterval(() => void tick().catch(() => undefined), 60_000);
+  // Shared with the API, which sweeps too when it runs its own jobs. The
+  // update is idempotent, so both doing it costs nothing.
+  startStaleRunSweeper('worker');
 
   const shutdown = async (): Promise<void> => {
     await prisma.$disconnect();
