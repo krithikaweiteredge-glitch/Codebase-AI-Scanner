@@ -637,6 +637,47 @@ export const STATIC_RULES: StaticRule[] = [
     skipTests: true,
   },
   {
+    // Found in OWASP/WebGoat.NET:
+    //   string sql = "select * from CustomerLogin where email = '" + email + "';";
+    // sec.sql-injection.concat requires the concatenated value to look like a
+    // JavaScript request object - req., params., body. C# concatenates a plain
+    // local, so the whole file of injections read as clean.
+    id: 'sec.sql-injection.csharp',
+    category: 'security',
+    type: 'sql-injection',
+    title: 'SQL string concatenated with a variable',
+    severity: 'critical',
+    confidence: 0.8,
+    languages: ['csharp'],
+    pattern: /(?:SELECT|INSERT|UPDATE|DELETE)\b[^;\n]{0,200}["']\s*\+\s*[A-Za-z_]\w*/i,
+    // A statement carrying named parameters is already using the safe API.
+    unless: /@[A-Za-z_]\w*\s*[,)]|Parameters\.Add/,
+    description:
+      'The value is pasted into the statement before the database sees it, so a quote inside it ends the literal and everything after is read as SQL.',
+    recommendation: 'Use a parameterised command - @name placeholders with Parameters.AddWithValue - so the value is never parsed as SQL.',
+    cwe: 'CWE-89',
+    skipTests: true,
+  },
+  {
+    // Also WebGoat.NET: (new BinaryFormatter()).Deserialize(ms).
+    // sec.unsafe-deserialization knows pickle, yaml, unserialize and
+    // ObjectInputStream; the .NET formatters were the remaining gap, and they
+    // are the ones Microsoft removed outright in .NET 9 for being unfixable.
+    id: 'sec.unsafe-deserialization.dotnet',
+    category: 'security',
+    type: 'unsafe-deserialization',
+    title: 'Object rebuilt with a .NET formatter that cannot be made safe',
+    severity: 'critical',
+    confidence: 0.85,
+    languages: ['csharp'],
+    pattern: /\b(?:BinaryFormatter|SoapFormatter|NetDataContractSerializer|LosFormatter|ObjectStateFormatter)\b/,
+    description:
+      'These formatters reconstruct whatever type the payload names and run its constructors and setters on the way. A crafted stream therefore executes code before any of this code inspects the result, which is why the type was removed from .NET 9 rather than repaired.',
+    recommendation: 'Carry the data as JSON or protobuf with an explicit contract, and reject anything that does not match it.',
+    cwe: 'CWE-502',
+    skipTests: true,
+  },
+  {
     id: 'bug.empty-catch',
     category: 'bug',
     type: 'swallowed-exception',

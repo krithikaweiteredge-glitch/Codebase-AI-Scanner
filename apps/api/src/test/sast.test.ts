@@ -582,3 +582,36 @@ describe('rules for ruby and php, which had none of their own', () => {
     expect(ids('user = User.where(id: params[:id]).first', 'ruby')).not.toContain('sec.sql-injection.ruby');
   });
 });
+
+describe('rules for c#, the last language on generic rules alone', () => {
+  const ids = (content: string) =>
+    runStaticRules({ ...file('App_Code/DB/Provider.cs', content), language: 'csharp' }).map((d) => d.ruleId);
+
+  it('flags SQL concatenated with a plain local, which the generic rule required a request object for', () => {
+    // sec.sql-injection.concat matches req./params./body. - JavaScript shapes.
+    // OWASP/WebGoat.NET concatenates ordinary locals, so its data layer read clean.
+    expect(ids(`string sql = "select * from CustomerLogin where email = '" + email + "';";`)).toContain(
+      'sec.sql-injection.csharp',
+    );
+    expect(ids(`string sql = "select email from CustomerLogin where customerNumber = " + customerNumber;`)).toContain(
+      'sec.sql-injection.csharp',
+    );
+  });
+
+  it('leaves a parameterised command alone', () => {
+    expect(ids(`string sql = "select * from Offices where city = @city";`)).not.toContain('sec.sql-injection.csharp');
+    expect(ids(`cmd.Parameters.AddWithValue("@city", city); string sql = "select * from x where city = " + city;`))
+      .not.toContain('sec.sql-injection.csharp');
+  });
+
+  it('flags the .NET formatters that cannot be made safe', () => {
+    // Removed outright in .NET 9 rather than repaired, which is the strongest
+    // statement Microsoft makes about an API.
+    expect(ids('val = (new BinaryFormatter ()).Deserialize (ms);')).toContain('sec.unsafe-deserialization.dotnet');
+    expect(ids('var f = new LosFormatter();')).toContain('sec.unsafe-deserialization.dotnet');
+  });
+
+  it('leaves a contract-based deserializer alone', () => {
+    expect(ids('val = JsonSerializer.Deserialize<Order>(json);')).not.toContain('sec.unsafe-deserialization.dotnet');
+  });
+});
