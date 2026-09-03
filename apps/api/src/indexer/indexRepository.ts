@@ -239,10 +239,16 @@ export async function indexRepository(options: IndexOptions, progress: RunProgre
       return { file, parsed, lineCount, role, secrets, chunks };
     });
 
-    // Embed every chunk in the batch with one provider round-trip.
-    const chunkTexts = prepared.flatMap((p) =>
-      p.chunks.map((c) => embeddingText(p.file.path, c.symbolName, c.symbolType, c.content)),
-    );
+    // Embed the chunks worth embedding, in one provider round-trip. A vector is
+    // 6,152 bytes and dominates storage - roughly twenty times the source it
+    // describes once the index is counted - so spending one on a stylesheet or
+    // a static asset buys nothing: nobody asks a codebase a question that a
+    // rule block answers, and keyword and trigram search still reach them
+    // because the chunk itself is stored either way.
+    const embeddable = prepared.flatMap((p) => p.chunks.map(() => isEmbeddableFile(p.file.path, p.file.language)));
+    const chunkTexts = prepared
+      .flatMap((p) => p.chunks.map((c) => embeddingText(p.file.path, c.symbolName, c.symbolType, c.content)))
+      .filter((_, index) => embeddable[index]);
     let vectors: number[][] = [];
     if (chunkTexts.length) {
       try {
@@ -253,6 +259,7 @@ export async function indexRepository(options: IndexOptions, progress: RunProgre
     }
 
     let vectorCursor = 0;
+    let embeddableCursor = 0;
     for (const item of prepared) {
       const { file, parsed, lineCount, role, secrets, chunks } = item;
       totalLines += lineCount;
@@ -319,8 +326,8 @@ export async function indexRepository(options: IndexOptions, progress: RunProgre
       }
 
       const inserts: ChunkInsert[] = chunks.map((chunk) => {
-        const embedding = vectors[vectorCursor] ?? null;
-        vectorCursor++;
+        // Only embeddable chunks consumed a slot in the vector array.
+        const embedding = embeddable[embeddableCursor++] ? (vectors[vectorCursor++] ?? null) : null;
         if (embedding) embeddedCount++;
         return {
           repositoryId: repository.id,
@@ -473,6 +480,19 @@ export async function indexRepository(options: IndexOptions, progress: RunProgre
     stack,
     treeTruncated: tree.truncated,
   };
+}
+
+/**
+ * Whether a file's chunks are worth a vector.
+ *
+ * Stylesheets, markup, static assets and lockfiles are indexed and searchable,
+ * but semantic similarity over them answers nothing - and each vector costs
+ * 6,152 bytes plus its share of the HNSW index.
+ */
+export function isEmbeddableFile(filePath: string, language: string): boolean {
+  if (/\.(css|scss|sass|less|styl|svg|html?|xml|lock|snap|map|csv|po)$/i.test(filePath)) return false;
+  if (/(^|\/)(public|static|assets?|images?|img|fonts?|media)(\/|$)/i.test(filePath)) return false;
+  return !['css', 'scss', 'html', 'xml', 'svg', 'markdown', 'text'].includes(language);
 }
 
 /** Prefix chunks with their location so the vector carries file/symbol signal. */
