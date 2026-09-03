@@ -18,7 +18,8 @@ import { materialize, type WorkspaceLimits } from './workspace';
 import {
   resultsToFindings,
   runSemgrep,
-  semgrepVersion,
+  probeSemgrep,
+  type SemgrepProbe,
   SemgrepUnavailable,
   type SemgrepOptions,
 } from './semgrep';
@@ -39,11 +40,16 @@ export interface SastResult {
  * Resolved once per process. Probing the binary costs a subprocess spawn, and
  * whether semgrep is installed does not change while the server is running.
  */
-let cachedVersion: { value: string | null } | null = null;
+let cachedProbe: SemgrepProbe | null = null;
 
 export async function detectSemgrep(options: Pick<SemgrepOptions, 'binary'>): Promise<string | null> {
-  if (!cachedVersion) cachedVersion = { value: await semgrepVersion(options) };
-  return cachedVersion.value;
+  return (await probeSemgrepCached(options)).version;
+}
+
+/** The full probe result, so callers can report why it failed. */
+export async function probeSemgrepCached(options: Pick<SemgrepOptions, 'binary'>): Promise<SemgrepProbe> {
+  if (!cachedProbe) cachedProbe = await probeSemgrep(options);
+  return cachedProbe;
 }
 
 /**
@@ -53,16 +59,16 @@ export async function detectSemgrep(options: Pick<SemgrepOptions, 'binary'>): Pr
  * cached and starts the probe if it has not run, so the answer is there on the
  * next call.
  */
-export function semgrepStatus(options: Pick<SemgrepOptions, 'binary'>): string | null {
-  if (!cachedVersion) {
-    void detectSemgrep(options);
-    return null;
+export function semgrepStatus(options: Pick<SemgrepOptions, 'binary'>): SemgrepProbe & { probed: boolean } {
+  if (!cachedProbe) {
+    void probeSemgrepCached(options);
+    return { version: null, probed: false };
   }
-  return cachedVersion.value;
+  return { ...cachedProbe, probed: true };
 }
 /** Test seam: forget the probe result so a later call re-checks. */
 export function resetSemgrepDetection(): void {
-  cachedVersion = null;
+  cachedProbe = null;
 }
 
 /**
@@ -73,13 +79,16 @@ export async function runSastScan(
   files: readonly AnalyzableFile[],
   options: SastOptions,
 ): Promise<SastResult> {
-  const version = await detectSemgrep(options);
-  if (!version) {
+  const probe = await probeSemgrepCached(options);
+  if (!probe.version) {
+    // Say what actually happened. Reporting every failure as "not on PATH"
+    // sent a reader looking for a missing file when the binary was present and
+    // the instance had simply run out of memory to start it.
     throw new SemgrepUnavailable(
-      `semgrep is not installed or not on PATH (looked for "${options.binary}"). ` +
-        'Install it in the API image to enable dataflow analysis.',
+      `semgrep could not be run ("${options.binary}"): ${probe.error ?? 'unknown reason'}.`,
     );
   }
+  const version = probe.version;
 
   // Generated code is machine-written and its findings are not actionable.
   const scannable = files.filter((file) => !file.isGenerated);
