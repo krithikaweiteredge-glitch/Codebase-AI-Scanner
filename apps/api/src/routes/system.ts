@@ -25,7 +25,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     // reading a deploy log or an analysis run's skipped step. The probe result is
     // cached for the life of the process, and never awaited here: this endpoint is
     // the platform health check and must not wait on a spawned process.
-    const semgrepVersion = env.SEMGREP_ENABLED ? semgrepStatus({ binary: env.SEMGREP_PATH }) : null;
+    const semgrep = env.SEMGREP_ENABLED ? semgrepStatus({ binary: env.SEMGREP_PATH }) : null;
 
     const ai = getAIProvider();
     const embeddings = getEmbeddingProvider();
@@ -36,7 +36,15 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       pgvector,
       ai: { provider: ai.name, model: ai.model, generation: ai.supportsGeneration },
       embeddings: { provider: embeddings.name, model: embeddings.model, dimensions: embeddings.dimensions },
-      sast: { enabled: env.SEMGREP_ENABLED, binary: env.SEMGREP_PATH, version: semgrepVersion },
+      sast: {
+        enabled: env.SEMGREP_ENABLED,
+        binary: env.SEMGREP_PATH,
+        version: semgrep?.version ?? null,
+        // Distinguishes "the probe has not run yet" from "it ran and failed",
+        // which one null could not.
+        probed: semgrep?.probed ?? false,
+        ...(semgrep?.error ? { error: semgrep.error } : {}),
+      },
       github: { oauthConfigured: githubOAuthConfigured, apiUrl: env.GITHUB_API_URL },
       queue: { mode: queueMode(), pending: getQueue().size(), running: getQueue().running() },
       limits: {

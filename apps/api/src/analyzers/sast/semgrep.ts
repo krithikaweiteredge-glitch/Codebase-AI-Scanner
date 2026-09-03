@@ -125,18 +125,50 @@ interface ExecFailure extends Error {
  * Returns the installed version, or null when semgrep cannot be run at all.
  * Never throws - "not installed" is an expected deployment state, not a fault.
  */
-export async function semgrepVersion(options: Pick<SemgrepOptions, 'binary'>): Promise<string | null> {
+export interface SemgrepProbe {
+  /** The installed version, or null when semgrep could not be run at all. */
+  version: string | null;
+  /** Why it could not be run. Absent on success. */
+  error?: string;
+}
+
+/**
+ * Runs `semgrep --version` and reports what happened.
+ *
+ * Never throws - an absent semgrep is an expected deployment state. But it no
+ * longer discards *why*: ENOENT really is "not installed", while a kill signal
+ * is the process running out of memory and a timeout is the host being slow,
+ * and reporting all three as "not on PATH" sends the reader to look in exactly
+ * the wrong place.
+ */
+export async function probeSemgrep(options: Pick<SemgrepOptions, 'binary'>): Promise<SemgrepProbe> {
   try {
     const { stdout } = await run(options.binary, ['--version'], {
       timeout: VERSION_TIMEOUT_MS,
       windowsHide: true,
     });
     const version = stdout.trim().split('\n')[0]?.trim();
-    return version || null;
-  } catch {
-    return null;
+    return version ? { version } : { version: null, error: 'the binary ran but printed no version' };
+  } catch (error) {
+    const failure = error as ExecFailure;
+    if (failure.code === 'ENOENT') {
+      return { version: null, error: 'no such file - it is not installed or not on PATH' };
+    }
+    if (failure.killed) {
+      return {
+        version: null,
+        error: `killed after ${VERSION_TIMEOUT_MS} ms or by the kernel - usually too little memory on the instance`,
+      };
+    }
+    const detail = (failure.stderr || failure.message || '').trim().split('\n')[0] ?? '';
+    return { version: null, error: `exited with ${String(failure.code ?? 'an error')}${detail ? `: ${detail}` : ''}` };
   }
 }
+/** The installed version, or null when semgrep cannot be run at all. */
+export async function semgrepVersion(options: Pick<SemgrepOptions, 'binary'>): Promise<string | null> {
+  return (await probeSemgrep(options)).version;
+}
+
 
 /**
  * Scans `directory` and returns parsed output.
