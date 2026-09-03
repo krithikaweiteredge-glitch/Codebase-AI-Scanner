@@ -686,13 +686,21 @@ export function runStaticRules(file: AnalyzableFile): AnalysisFindingDraft[] {
         pattern.lastIndex++;
         continue;
       }
-      const startLine = lineAt(file.content, match.index);
-      const lineText = lines[startLine - 1] ?? '';
+      const matchStart = lineAt(file.content, match.index);
+      const matchEnd = lineAt(file.content, match.index + match[0].length);
 
-      if (isCommentedOut(lineText, file.language)) continue;
+      // Anchor to the first line of the match that is real code. A pattern
+      // whose leading token is an ordinary word - session, secret, password -
+      // will happily begin inside the comment that introduces the call it is
+      // about, and anchoring there discarded the finding as commented out
+      // while the offending line sat a few rows below, inside the same match.
+      let startLine = matchStart;
+      while (startLine <= matchEnd && isCommentedOut(lines[startLine - 1] ?? '', file.language)) startLine++;
+      if (startLine > matchEnd) continue;
+      const lineText = lines[startLine - 1] ?? '';
       if (rule.unless && (rule.unless.test(lineText) || rule.unless.test(file.path))) continue;
 
-      const endLine = Math.min(lines.length, lineAt(file.content, match.index + match[0].length));
+      const endLine = Math.min(lines.length, Math.max(matchEnd, startLine));
 
       findings.push({
         category: rule.category,
