@@ -514,6 +514,129 @@ export const STATIC_RULES: StaticRule[] = [
     skipTests: true,
   },
   {
+    // Found in digininja/DVWA:
+    //   $query = "UPDATE users SET first_name = '" . $data->first_name . "'..."
+    // sec.sql-injection.concat looks for `+` and a JavaScript-shaped request
+    // object. PHP concatenates with `.` and reads $_GET directly, so 26 files
+    // of deliberate SQL injection produced nothing.
+    id: 'sec.sql-injection.php',
+    category: 'security',
+    type: 'sql-injection',
+    title: 'SQL string built from a PHP variable',
+    severity: 'critical',
+    confidence: 0.85,
+    languages: ['php'],
+    // Three shapes, because PHP offers three: concatenation with `.`, a
+    // superglobal read inline, and - the one DVWA actually ships - a plain
+    // variable interpolated into a double-quoted string: "... user_id = '$id'".
+    pattern:
+      /(?:SELECT|INSERT|UPDATE|DELETE)\s[^;\n]{0,200}(?:['"]\s*\.\s*\$|\$_(?:GET|POST|REQUEST|COOKIE)|\$[a-z_]\w*)/i,
+    description:
+      'A value the caller supplies is concatenated or interpolated into the statement, so the caller decides what the statement says rather than only what it looks for.',
+    recommendation: 'Use a prepared statement with bound parameters - mysqli_prepare or PDO::prepare - and never build SQL from request data.',
+    cwe: 'CWE-89',
+    skipTests: true,
+  },
+  {
+    // Found in OWASP/railsgoat:
+    //   model = params[:class].classify.constantize
+    // Turning a request string into a class is remote code selection: the
+    // caller picks which class is instantiated, and .new on the result runs
+    // whatever that class does.
+    id: 'sec.unsafe-reflection.ruby',
+    category: 'security',
+    type: 'unsafe-reflection',
+    title: 'Class chosen by the caller',
+    severity: 'critical',
+    confidence: 0.85,
+    languages: ['ruby'],
+    pattern: /params\s*\[[^\]\n]{0,40}\][^;\n]{0,60}\.(?:constantize|safe_constantize)\b/,
+    description:
+      'constantize resolves a string to a class. When the string comes from a request the caller chooses which class the application loads and instantiates, which reaches far beyond the models the route was written for.',
+    recommendation: 'Map the parameter through an explicit allowlist of permitted class names and reject anything else.',
+    cwe: 'CWE-470',
+    skipTests: true,
+  },
+  {
+    // Also railsgoat: Marshal.load(Base64.decode64(params[:user])).
+    // sec.unsafe-deserialization covers pickle, yaml.load, unserialize and
+    // ObjectInputStream - every ecosystem except this one.
+    id: 'sec.unsafe-deserialization.ruby',
+    category: 'security',
+    type: 'unsafe-deserialization',
+    title: 'Ruby object rebuilt from untrusted bytes',
+    severity: 'critical',
+    confidence: 0.85,
+    languages: ['ruby'],
+    pattern: /(?:Marshal\.load|YAML\.unsafe_load|YAML\.load)\s*\(\s*(?!['"])/,
+    description:
+      'Marshal and YAML.load rebuild arbitrary Ruby objects, running their initialisation as they go. A crafted payload therefore executes code before any of this code sees the result.',
+    recommendation: 'Carry the value as JSON, or use YAML.safe_load with an explicit list of permitted classes.',
+    cwe: 'CWE-502',
+    skipTests: true,
+  },
+  {
+    // railsgoat again:
+    //   "...password reset email to #{params[:email]}".html_safe
+    // html_safe is a promise to Rails that the string needs no escaping, made
+    // about a string that just interpolated a request value.
+    id: 'sec.xss.ruby-html-safe',
+    category: 'security',
+    type: 'xss',
+    title: 'Interpolated string marked as safe HTML',
+    severity: 'high',
+    confidence: 0.8,
+    languages: ['ruby'],
+    pattern: /["'][^"'\n]*#\{[^}\n]*\}[^"'\n]*["']\s*\.html_safe\b/,
+    description:
+      'html_safe tells Rails this string is already escaped, which switches off the protection the view would otherwise apply. Anything interpolated into it reaches the page as markup.',
+    recommendation: 'Leave the string as it is and let the view escape it; use sanitize when some markup genuinely must survive.',
+    cwe: 'CWE-79',
+    skipTests: true,
+  },
+  {
+    // railsgoat: User.where("id = '#{params[:user][:id]}'")[0]
+    // ActiveRecord binds parameters when given them; interpolating into the
+    // string is the one way to lose that, and no rule covered Ruby SQL.
+    id: 'sec.sql-injection.ruby',
+    category: 'security',
+    type: 'sql-injection',
+    title: 'ActiveRecord condition built by interpolation',
+    severity: 'critical',
+    confidence: 0.85,
+    languages: ['ruby'],
+    // Lazy to the interpolation rather than a negated class: the condition
+    // almost always quotes the value - "id = '#{...}'" - and excluding quotes
+    // stopped the match at the inner one.
+    pattern: /\.(?:where|find_by_sql|order|group|having|joins|pluck)\s*\(\s*["'][^\n]{0,120}?#\{/,
+    description:
+      'Interpolating into the condition string bypasses the parameter binding ActiveRecord would otherwise do, so the caller can change the shape of the query and not merely its values.',
+    recommendation: 'Pass conditions as a hash or use the ? / named-binding form, which quotes the value for you.',
+    cwe: 'CWE-89',
+    skipTests: true,
+  },
+  {
+    // Found in digininja/DVWA:
+    //   $cmd = shell_exec( 'ping  ' . $target );   with $target = $_REQUEST['ip']
+    // sec.command-injection is scoped to JavaScript, so PHP - the language with
+    // the largest collection of shell wrappers in its standard library - had no
+    // command-injection rule at all.
+    id: 'sec.command-injection.php',
+    category: 'security',
+    type: 'command-injection',
+    title: 'Shell command built from a PHP variable',
+    severity: 'critical',
+    confidence: 0.85,
+    languages: ['php'],
+    pattern:
+      /\b(?:shell_exec|system|passthru|popen|proc_open|exec)\s*\(\s*[^)\n]{0,160}(?:\.\s*\$|\$_(?:GET|POST|REQUEST|COOKIE)|\$[a-z_]\w*)/i,
+    description:
+      'The value reaches a shell, which reads it as a command line rather than as an argument. A semicolon or a backtick in it starts a second command.',
+    recommendation: 'Avoid the shell entirely, or pass arguments through escapeshellarg and validate against an allowlist.',
+    cwe: 'CWE-78',
+    skipTests: true,
+  },
+  {
     id: 'bug.empty-catch',
     category: 'bug',
     type: 'swallowed-exception',
