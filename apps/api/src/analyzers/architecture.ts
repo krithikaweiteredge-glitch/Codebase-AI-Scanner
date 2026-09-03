@@ -23,7 +23,7 @@ export interface CouplingEntry {
 
 export interface DependencyGraph {
   nodes: { id: string; path: string; role: string | null; language: string | null; loc: number; fanIn: number; fanOut: number }[];
-  edges: { from: string; to: string; specifier: string }[];
+  edges: { from: string; to: string; specifier: string; kind: string }[];
   externals: { specifier: string; importers: number }[];
   cycles: string[][];
   hotspots: CouplingEntry[];
@@ -37,7 +37,7 @@ export async function buildDependencyGraphView(repositoryId: string, branchId: s
   });
   const deps = await prisma.dependency.findMany({
     where: { repositoryId, fromFile: { branchId } },
-    select: { fromFileId: true, toFileId: true, specifier: true, isExternal: true },
+    select: { fromFileId: true, toFileId: true, specifier: true, isExternal: true, kind: true },
   });
 
   const fanIn = new Map<string, number>();
@@ -54,7 +54,7 @@ export async function buildDependencyGraphView(repositoryId: string, branchId: s
       fanOut.set(dep.fromFileId, (fanOut.get(dep.fromFileId) ?? 0) + 1);
       continue;
     }
-    edges.push({ from: dep.fromFileId, to: dep.toFileId, specifier: dep.specifier });
+    edges.push({ from: dep.fromFileId, to: dep.toFileId, specifier: dep.specifier, kind: dep.kind });
     fanOut.set(dep.fromFileId, (fanOut.get(dep.fromFileId) ?? 0) + 1);
     fanIn.set(dep.toFileId, (fanIn.get(dep.toFileId) ?? 0) + 1);
   }
@@ -175,7 +175,7 @@ export function deterministicMermaid(stack: StackProfile, graph: DependencyGraph
   const idFor = new Map<string, string>();
   significant.forEach(([dir], index) => idFor.set(dir, `D${index}`));
 
-  const edgeCounts = new Map<string, number>();
+  const edgeCounts = new Map<string, { count: number; http: boolean }>();
   const pathById = new Map(graph.nodes.map((n) => [n.id, n.path]));
 
   for (const edge of graph.edges) {
@@ -184,7 +184,12 @@ export function deterministicMermaid(stack: StackProfile, graph: DependencyGraph
     if (from === to) continue;
     if (!idFor.has(from) || !idFor.has(to)) continue;
     const key = `${idFor.get(from)}->${idFor.get(to)}`;
-    edgeCounts.set(key, (edgeCounts.get(key) ?? 0) + 1);
+    const entry = edgeCounts.get(key) ?? { count: 0, http: false };
+    entry.count++;
+    // A call across the network is a different kind of coupling from an import
+    // and the diagram should not imply the two halves are linked at build time.
+    if (edge.kind === 'http') entry.http = true;
+    edgeCounts.set(key, entry);
   }
 
   const lines = ['flowchart TD'];
@@ -192,9 +197,13 @@ export function deterministicMermaid(stack: StackProfile, graph: DependencyGraph
     const role = roleByDirectory.get(dir) ?? [...value.roles.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'unknown';
     lines.push(`  ${idFor.get(dir)}["${escapeMermaid(dir)}<br/>${value.files} files · ${escapeMermaid(role)}"]`);
   }
-  for (const [key, count] of [...edgeCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40)) {
+  for (const [key, edge] of [...edgeCounts.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 40)) {
     const [from, to] = key.split('->');
-    lines.push(`  ${from} -->|${count}| ${to}`);
+    lines.push(
+      edge.http
+        ? `  ${from} -.->|${edge.count} HTTP| ${to}`
+        : `  ${from} -->|${edge.count}| ${to}`,
+    );
   }
 
   // Externals are only worth drawing when they attach to a module that is on

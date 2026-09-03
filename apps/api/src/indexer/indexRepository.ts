@@ -15,6 +15,7 @@ import { buildIgnoreMatcher } from './ignore';
 import { detectLanguage, detectRole, isConfigFile, isTestFile, looksGenerated, type Language } from './languages';
 import { parseFile } from './parsers';
 import type { ParsedSymbol } from './parsers/types';
+import { detectHttpCalls, matchCallToRoute } from './httpCalls';
 import { buildStackProfile, type IndexedFileSummary, type StackProfile } from './projectMap';
 import type { RunProgress } from './progress';
 import { detectSecrets } from './secrets';
@@ -418,8 +419,29 @@ export async function indexRepository(options: IndexOptions, progress: RunProgre
 
   // ---- 7. dependency graph ----------------------------------------------
   await progress.start('dependencies');
-  const dependencyCount = await buildDependencyGraph(repository.id, branch.id, importsByPath);
-  await progress.complete('dependencies', `${dependencyCount} edges`);
+  // A frontend calling its own backend over HTTP is not an import, so the graph
+  // showed the two halves of a full-stack repository as disconnected islands.
+  // Resolve each client call to the route that serves it and record the edge.
+  const httpEdges = new Map<string, { specifier: string; kind: string }[]>();
+  let matchedCalls = 0;
+  for (const file of summaries) {
+    if (file.isTest) continue;
+    for (const call of detectHttpCalls(file.content, file.language)) {
+      const route = matchCallToRoute(call, stack.routes);
+      if (!route || route.file === file.path) continue;
+      const list = httpEdges.get(file.path) ?? [];
+      const specifier = `${call.method ?? 'ANY'} ${call.path}`;
+      if (!list.some((e) => e.specifier === specifier)) list.push({ specifier, kind: `http:${route.file}` });
+      httpEdges.set(file.path, list);
+      matchedCalls++;
+    }
+  }
+
+  const dependencyCount = await buildDependencyGraph(repository.id, branch.id, importsByPath, httpEdges);
+  await progress.complete(
+    'dependencies',
+    `${dependencyCount} edges${matchedCalls ? `, ${matchedCalls} of them frontend-to-backend calls` : ''}`,
+  );
 
   // ---- 8. finalise -------------------------------------------------------
   await prisma.repositoryBranch.update({
@@ -503,8 +525,10 @@ export async function buildDependencyGraph(
   repositoryId: string,
   branchId: string,
   importsByPath: Map<string, { specifier: string; kind: string }[]>,
+  /** Client HTTP calls, keyed by caller path; kind carries the target file as `http:<path>`. */
+  httpEdges: Map<string, { specifier: string; kind: string }[]> = new Map(),
 ): Promise<number> {
-  if (importsByPath.size === 0) return prisma.dependency.count({ where: { repositoryId } });
+  if (importsByPath.size === 0 && httpEdges.size === 0) return prisma.dependency.count({ where: { repositoryId } });
 
   const allFiles = await prisma.repositoryFile.findMany({
     where: { branchId },
@@ -548,6 +572,18 @@ export async function buildDependencyGraph(
         isExternal: toFileId === null,
         kind: imp.kind,
       });
+    }
+  }
+
+  // The target is already known by path - these were resolved against the
+  // route table, not against a module specifier.
+  for (const [fromPath, calls] of httpEdges) {
+    const fromId = byPath.get(fromPath);
+    if (!fromId) continue;
+    for (const call of calls) {
+      const toFileId = byPath.get(call.kind.slice('http:'.length)) ?? null;
+      if (!toFileId) continue;
+      rows.push({ repositoryId, fromFileId: fromId, toFileId, specifier: call.specifier, isExternal: false, kind: 'http' });
     }
   }
 

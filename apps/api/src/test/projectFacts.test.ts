@@ -203,8 +203,8 @@ describe('architecture fallback', () => {
       { id: 'c', path: 'src/lib/text.ts', role: 'util', language: 'typescript', loc: 1, fanIn: 2, fanOut: 0 },
     ],
     edges: [
-      { from: 'a', to: 'c', specifier: '../lib/text' },
-      { from: 'b', to: 'c', specifier: '../lib/text' },
+      { from: 'a', to: 'c', specifier: '../lib/text', kind: 'import' },
+      { from: 'b', to: 'c', specifier: '../lib/text', kind: 'import' },
     ],
     externals: [],
     cycles: [],
