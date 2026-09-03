@@ -1,0 +1,101 @@
+name: Codebase AI Scan
+description: >-
+  Runs a Codebase AI analysis and writes the findings as SARIF, so they appear
+  on the pull request next to the diff instead of only in the web UI.
+
+inputs:
+  api-url:
+    description: Base URL of the Codebase AI API, with no trailing slash.
+    required: true
+  api-token:
+    description: >-
+      A token from POST /api/auth/tokens. Store it as an encrypted secret -
+      it grants the same access as a signed-in session.
+    required: true
+  repository-id:
+    description: The repository's id in Codebase AI (a UUID).
+    required: true
+  analyze:
+    description: >-
+      Run a fresh analysis before exporting. Off by default because a scan
+      takes minutes and most workflows want the findings from the last one.
+    required: false
+    default: 'false'
+  output:
+    description: Where to write the SARIF file.
+    required: false
+    default: codebase-ai.sarif
+  timeout-minutes:
+    description: How long to wait for an analysis started by this action.
+    required: false
+    default: '15'
+
+outputs:
+  sarif-file:
+    description: Path to the SARIF file that was written.
+    value: ${{ steps.export.outputs.sarif-file }}
+  findings:
+    description: Number of results in the SARIF file.
+    value: ${{ steps.export.outputs.findings }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run analysis
+      if: inputs.analyze == 'true'
+      shell: bash
+      env:
+        API_URL: ${{ inputs.api-url }}
+        API_TOKEN: ${{ inputs.api-token }}
+        REPO_ID: ${{ inputs.repository-id }}
+        WAIT_MINUTES: ${{ inputs.timeout-minutes }}
+      run: |
+        set -euo pipefail
+        echo "Starting analysis..."
+        curl -sS -f -X POST \
+          -H "Authorization: Bearer ${API_TOKEN}" \
+          -H 'content-type: application/json' \
+          "${API_URL}/api/repositories/${REPO_ID}/analyze" -d '{}' > /dev/null
+
+        # Poll rather than assume: an analysis is minutes of work, and exporting
+        # while it runs would report the previous run's findings as this one's.
+        deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+          status=$(curl -sS -f -H "Authorization: Bearer ${API_TOKEN}" \
+            "${API_URL}/api/repositories/${REPO_ID}/analysis" \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log((j.run&&j.run.status)||j.status||'unknown')}catch(e){console.log('unknown')}})")
+          echo "  status: ${status}"
+          case "$status" in
+            completed) echo "Analysis complete."; exit 0 ;;
+            failed) echo "::error::The analysis failed. See the run in Codebase AI."; exit 1 ;;
+          esac
+          sleep 20
+        done
+        echo "::error::Timed out after ${WAIT_MINUTES} minutes waiting for the analysis."
+        exit 1
+
+    - name: Export SARIF
+      id: export
+      shell: bash
+      env:
+        API_URL: ${{ inputs.api-url }}
+        API_TOKEN: ${{ inputs.api-token }}
+        REPO_ID: ${{ inputs.repository-id }}
+        OUT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        curl -sS -f -H "Authorization: Bearer ${API_TOKEN}" \
+          "${API_URL}/api/repositories/${REPO_ID}/findings.sarif" -o "${OUT}"
+
+        # A file that is not valid SARIF fails here, where the message is about
+        # this action, rather than inside the upload step where it is not.
+        count=$(node -e "
+          const fs=require('fs');
+          const doc=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
+          if (doc.version !== '2.1.0' || !Array.isArray(doc.runs)) { console.error('not a SARIF 2.1.0 document'); process.exit(1); }
+          console.log(doc.runs.reduce((n,r)=>n+((r.results||[]).length),0));
+        " "${OUT}")
+
+        echo "sarif-file=${OUT}" >> "$GITHUB_OUTPUT"
+        echo "findings=${count}" >> "$GITHUB_OUTPUT"
+        echo "Wrote ${count} finding(s) to ${OUT}"
