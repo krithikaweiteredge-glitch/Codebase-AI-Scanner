@@ -8,6 +8,7 @@ ${GROUNDING_RULES}
 
 WHAT TO LOOK FOR (only report what the excerpts actually show):
 - Injection: SQL, NoSQL, command, LDAP, template. Look for user input reaching an interpreter without parameterisation.
+// codebase-ai-ignore: sec.xss.dangerously-set-html - the prompt names the sink it asks the model to look for
 - XSS (unescaped output, dangerouslySetInnerHTML, innerHTML with request data), CSRF (state-changing routes without token/SameSite), SSRF (user-controlled URLs passed to fetch/axios/requests).
 - Path traversal, unsafe deserialisation, unsafe file upload handling.
 - Broken authentication / authorization: routes with no auth guard, missing ownership checks, role checks that can be bypassed, IDOR.

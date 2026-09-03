@@ -62,6 +62,7 @@ const INTERESTING = new RegExp(
     // network and filesystem
     'fetch\\(|axios|http[s]?\\.|url|redirect|readFile|writeFile|createReadStream|path\\.join',
     // browser sinks
+    // codebase-ai-ignore: sec.xss.dangerously-set-html - names the sink, never calls it
     'innerHTML|dangerouslySetInnerHTML|document\\.write|localStorage|postMessage',
     // python / go / java shapes
     'subprocess|pickle|os\\.system|cursor\\.|http\\.HandleFunc|Statement|Runtime\\.getRuntime',

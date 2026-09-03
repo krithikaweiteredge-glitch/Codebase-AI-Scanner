@@ -16,6 +16,7 @@ import { buildCodeContext, buildRepositoryOverview } from '../search/context';
 import type { RetrievedChunk } from '../search/hybrid';
 import { findDuplicatePairs, duplicatePairToFinding, type DuplicateCandidateUnit } from './duplicates';
 import { applyPriorTriage, assignFingerprints, type TriageState } from './fingerprint';
+import { applySuppressions } from './suppress';
 import { runPolicies } from './policy';
 import { scanSecretHistory } from './secretHistory';
 import { triageFiles, type TriageVerdict } from './triage';
@@ -182,7 +183,20 @@ export async function analyzeRepository(ctx: AnalysisContext, progress: RunProgr
   }
 
   // ---- persist -----------------------------------------------------------
-  const deduped = dedupeFindings(drafts);
+  // Applied to every source at once - static rules, semgrep, dependencies and
+  // the AI review alike - because a repository declaring a directory to be
+  // fixtures means it for all of them, and applying this per detector would
+  // leave the same finding suppressed in one place and reported in another.
+  const { kept, summary: suppression } = applySuppressions(drafts, files, policy.suppressions);
+  // Never silent: a quiet report and a clean repository must not look the same.
+  if (suppression.suppressed) {
+    // eslint-disable-next-line no-console
+    console.info(
+      `[analysis] ${suppression.suppressed} finding(s) suppressed by the repository's own declarations`,
+      suppression.byRule,
+    );
+  }
+  const deduped = dedupeFindings(kept);
 
   // Identity first, then re-apply whatever the user already decided about
   // these findings on a previous run.

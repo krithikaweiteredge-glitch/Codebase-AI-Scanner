@@ -8,7 +8,7 @@
 import { confidenceLabel, findingStatus } from '../../prompts/shared';
 import type { AnalysisFindingDraft, AnalyzableFile } from '../types';
 import { evaluatePolicies } from './evaluate';
-import { parsePolicy, POLICY_PATHS } from './schema';
+import { parsePolicy, POLICY_PATHS, type Suppression } from './schema';
 
 export interface PolicyResult {
   drafts: AnalysisFindingDraft[];
@@ -18,6 +18,8 @@ export interface PolicyResult {
   violations: number;
   /** Rules whose globs matched nothing - usually a typo worth surfacing. */
   unmatchedRules: string[];
+  /** Findings the repository declares intentional. */
+  suppressions: Suppression[];
 }
 
 const EMPTY: PolicyResult = {
@@ -26,6 +28,7 @@ const EMPTY: PolicyResult = {
   rulesEvaluated: 0,
   violations: 0,
   unmatchedRules: [],
+  suppressions: [],
 };
 
 export function runPolicies(files: readonly AnalyzableFile[]): PolicyResult {
@@ -42,8 +45,10 @@ export function runPolicies(files: readonly AnalyzableFile[]): PolicyResult {
     configurationFinding(policyFile.path, message, index),
   );
 
+  // A file carrying only suppressions is legitimate: declaring which findings
+  // are intentional is useful on its own, without asserting any invariants.
   if (!file || !file.policies.length) {
-    return { ...EMPTY, drafts, policyPath: policyFile.path };
+    return { ...EMPTY, drafts, policyPath: policyFile.path, suppressions: file?.suppress ?? [] };
   }
 
   const evaluation = evaluatePolicies(file.policies, files, policyFile.path);
@@ -68,6 +73,7 @@ export function runPolicies(files: readonly AnalyzableFile[]): PolicyResult {
     rulesEvaluated: file.policies.length,
     violations: evaluation.drafts.length,
     unmatchedRules: evaluation.unmatchedRules,
+    suppressions: file.suppress,
   };
 }
 
