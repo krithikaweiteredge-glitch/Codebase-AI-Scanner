@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { isEmbeddableFile } from '../indexer/indexRepository';
 import { chunkFile } from '../indexer/chunker';
 import { buildIgnoreMatcher } from '../indexer/ignore';
 import { detectRole, detectLanguage, isTestFile } from '../indexer/languages';
@@ -258,5 +259,28 @@ describe('secret detection and redaction', () => {
   it('computes entropy used to suppress low-entropy false positives', () => {
     expect(shannonEntropy('aaaaaaaa')).toBeLessThan(1);
     expect(shannonEntropy('A1b2C3d4E5f6G7h8')).toBeGreaterThan(3);
+  });
+});
+
+describe('which chunks earn a vector', () => {
+  it('embeds source code', () => {
+    expect(isEmbeddableFile('backend/routes/authRoutes.js', 'javascript')).toBe(true);
+    expect(isEmbeddableFile('apps/api/src/db.ts', 'typescript')).toBe(true);
+    expect(isEmbeddableFile('scripts/deploy.py', 'python')).toBe(true);
+  });
+
+  it('does not spend a 6KB vector on a stylesheet or a static asset', () => {
+    expect(isEmbeddableFile('frontend/src/App.css', 'css')).toBe(false);
+    expect(isEmbeddableFile('frontend/src/theme.scss', 'scss')).toBe(false);
+    expect(isEmbeddableFile('frontend/public/logo.svg', 'svg')).toBe(false);
+    expect(isEmbeddableFile('frontend/public/index.html', 'html')).toBe(false);
+    expect(isEmbeddableFile('web/static/vendor.js', 'javascript')).toBe(false);
+  });
+
+  it('leaves the chunk itself indexed, so keyword search still reaches it', () => {
+    // The predicate only decides whether a vector is generated; the row is
+    // written either way, which is what keeps trigram and full-text search
+    // working over stylesheets.
+    expect(isEmbeddableFile('frontend/src/App.css', 'css')).toBe(false);
   });
 });
